@@ -153,6 +153,15 @@ the Wails app context.
 
 ---
 
+## Done
+
+- **Topology-aware stage gating** — `Orchestrator.pipelineStages` now
+  composes the stage list from `cluster.topology` (combined / ceph-only /
+  k8s-only). Skipped stages emit `run:stage-skipped` for Step 6 to dim and
+  strike them in the flow strip.
+
+---
+
 These six items together are roughly 4–6 dev-days (ESXi adds about a
 day for the govmomi adapter). Item 5 (MAC pre-allocation) is the
 cheapest unblocker for a happy-path libvirt+Leap+RKE2 demo.
