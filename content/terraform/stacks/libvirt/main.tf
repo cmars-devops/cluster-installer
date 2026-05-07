@@ -28,6 +28,10 @@ variable "nodes" {
     extra_disks_gb = list(number)
     seed_iso_path  = string
     mac            = optional(string)
+    boot_mode      = optional(string, "iso")    # "iso" (Combustion) or "kernel" (Agama)
+    kernel_path    = optional(string, "")
+    initrd_path    = optional(string, "")
+    cmdline        = optional(string, "")
   }))
 }
 
@@ -45,6 +49,11 @@ module "vm" {
   network_id     = var.network_id
   pool           = var.pool
   mac            = each.value.mac
+
+  boot_mode      = each.value.boot_mode
+  kernel_path    = each.value.kernel_path
+  initrd_path    = each.value.initrd_path
+  cmdline        = each.value.cmdline
 }
 
 output "node_ips" {

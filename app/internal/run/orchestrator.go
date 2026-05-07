@@ -21,11 +21,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/triangles-co-kr/cluster-installer/internal/httpserve"
 	"github.com/triangles-co-kr/cluster-installer/internal/inventory"
 	"github.com/triangles-co-kr/cluster-installer/internal/logging"
 	"github.com/triangles-co-kr/cluster-installer/internal/netutil"
+	"github.com/triangles-co-kr/cluster-installer/internal/runner"
 	apruntime "github.com/triangles-co-kr/cluster-installer/internal/runtime"
 	"github.com/triangles-co-kr/cluster-installer/internal/seed"
 	"github.com/triangles-co-kr/cluster-installer/internal/state"
@@ -202,20 +204,48 @@ func (o *Orchestrator) renderCombustion(ctx seed.Context, n inventory.NodeSpec) 
 	return nil
 }
 
-// ---- stub stages — Phase 1 implementation lands these ----------------
+// ---- stage implementations -------------------------------------------
 
 func (o *Orchestrator) terraformInit(ctx context.Context) error {
-	return o.todo("terraform init")
+	stack, err := o.copyStackToRun()
+	if err != nil {
+		return err
+	}
+	if _, err := o.renderTFVars(); err != nil {
+		return fmt.Errorf("render tfvars: %w", err)
+	}
+	r := o.tfRun(stack, "")
+	return r.Init(ctx)
 }
+
 func (o *Orchestrator) terraformPlan(ctx context.Context) error {
-	return o.todo("terraform plan")
+	stack := o.tfStackDir()
+	tfvars := filepath.Join(o.runDir(), "terraform", "tfvars.json")
+	plan := filepath.Join(o.runDir(), "terraform", "plan.tfplan")
+	r := o.tfRun(stack, tfvars)
+	return r.Plan(ctx, plan)
 }
+
 func (o *Orchestrator) terraformApply(ctx context.Context) error {
-	return o.todo("terraform apply (must inject inst.auto=" + o.baseURL + "/profiles/<host>.json into VM kernel cmdline)")
+	stack := o.tfStackDir()
+	plan := filepath.Join(o.runDir(), "terraform", "plan.tfplan")
+	r := o.tfRun(stack, "")
+	if err := r.Apply(ctx, plan); err != nil {
+		return err
+	}
+	o.emit("run:line", "terraform apply complete — VMs are booting and fetching profiles from "+o.baseURL)
+	return nil
 }
+
 func (o *Orchestrator) waitSSH(ctx context.Context) error {
-	return o.todo("ssh wait on all nodes")
+	hosts := make([]string, 0, len(o.Inventory.Nodes))
+	for _, n := range o.Inventory.Nodes {
+		hosts = append(hosts, n.IP)
+	}
+	o.emit("run:line", fmt.Sprintf("waiting for SSH on %d nodes (timeout 30m each)", len(hosts)))
+	return runner.WaitForSSH(ctx, hosts, "root", o.sshKeyPath(), 30*time.Minute)
 }
+
 func (o *Orchestrator) runK8sPlaybook(ctx context.Context) error {
 	pb := "playbooks/20-rke2.yml"
 	if o.Inventory.Cluster.Kubernetes.Distro == "k3s" {
@@ -223,14 +253,93 @@ func (o *Orchestrator) runK8sPlaybook(ctx context.Context) error {
 	}
 	return o.runPlaybook(ctx, pb)
 }
+
 func (o *Orchestrator) runPlaybook(ctx context.Context, rel string) error {
-	return o.todo("ansible-playbook " + rel)
+	hostsPath, err := o.renderHostsYAML()
+	if err != nil {
+		return fmt.Errorf("render hosts.yml: %w", err)
+	}
+	// Bootstrap ansible-core in the user's runtime venv on first run.
+	// Idempotent — skips when ansible-playbook.exe already exists.
+	if _, err := apruntime.EnsureReady(ctx, o.Log); err != nil {
+		return fmt.Errorf("ansible runtime: %w", err)
+	}
+	r := &runner.AnsibleRun{
+		ContentDir:    o.ContentDir,
+		Playbook:      rel,
+		InventoryYAML: hostsPath,
+		SSHKeyPath:    o.sshKeyPath(),
+		OnLine:        func(line string) { o.emit("run:line", line) },
+	}
+	o.emit("run:line", "→ ansible-playbook "+rel)
+	return r.Run(ctx)
 }
 
-func (o *Orchestrator) todo(what string) error {
-	o.Log.Info("orchestrator.todo", "stage", what)
-	o.emit("run:line", "[TODO] "+what)
-	return nil
+// ---- terraform helpers -----------------------------------------------
+
+func (o *Orchestrator) tfRun(stackDir, varFile string) *runner.TFRun {
+	return &runner.TFRun{
+		StackDir: stackDir,
+		VarFile:  varFile,
+		OnLine:   func(line string) { o.emit("run:line", line) },
+	}
+}
+
+func (o *Orchestrator) tfStackDir() string {
+	return filepath.Join(o.runDir(), "terraform", o.Inventory.Target.Type)
+}
+
+// copyStackToRun copies content/terraform/stacks/<target>/ + modules/
+// into runs/<id>/terraform/<target>/ so terraform.exe sees a stable working
+// dir whose state we own per run. Returns the destination stack dir.
+func (o *Orchestrator) copyStackToRun() (string, error) {
+	dstStack := o.tfStackDir()
+	srcStack := filepath.Join(o.ContentDir, "terraform", "stacks", o.Inventory.Target.Type)
+	if err := copyDir(srcStack, dstStack); err != nil {
+		return "", fmt.Errorf("copy tf stack: %w", err)
+	}
+	// Copy modules alongside (relative paths in stacks/*/main.tf use ../../modules/).
+	srcMods := filepath.Join(o.ContentDir, "terraform", "modules")
+	dstMods := filepath.Join(o.runDir(), "terraform", "modules")
+	if err := copyDir(srcMods, dstMods); err != nil {
+		return "", fmt.Errorf("copy tf modules: %w", err)
+	}
+	return dstStack, nil
+}
+
+func (o *Orchestrator) sshKeyPath() string {
+	if o.Inventory.Target.SSHKey != "" {
+		return os.ExpandEnv(o.Inventory.Target.SSHKey)
+	}
+	// Default: ~/.ssh/id_ed25519
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".ssh", "id_ed25519")
+}
+
+// copyDir does a recursive directory copy. Plain enough that pulling in
+// a third-party dep would be overkill.
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, rerr := filepath.Rel(src, path)
+		if rerr != nil {
+			return rerr
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode())
+	})
 }
 
 // ---- helpers ---------------------------------------------------------

@@ -14,10 +14,29 @@ variable "vcpu"            { type = number }
 variable "disk_gb"         { type = number }
 variable "extra_disks_gb"  { type = list(number); default = [] }
 variable "base_volume_id"  { type = string }
-variable "seed_iso_path"   { type = string; description = "Path on the libvirt host to the per-node seed ISO" }
+variable "seed_iso_path"   { type = string; description = "Per-node seed ISO on the libvirt host (Combustion+Ignition for MicroOS, also generated for Leap as fallback)" }
 variable "network_id"      { type = string }
 variable "mac"             { type = string; default = null }
 variable "pool"            { type = string; default = "default" }
+
+# ---- direct kernel boot (Agama: openSUSE Leap 16+ / Tumbleweed) -------
+# When boot_mode == "kernel" the domain boots vmlinuz/initrd directly with
+# cmdline (containing inst.auto=http://...) — bypassing the ISO's grub menu
+# entirely. This is the only reliable way to deliver an Agama profile to a
+# VM without remastering the netinstall ISO.
+# When boot_mode == "iso" (Combustion/MicroOS) the seed ISO is attached as a
+# second CD-ROM and the qcow2 boots normally.
+variable "boot_mode" {
+  type    = string
+  default = "iso"
+  validation {
+    condition     = contains(["iso", "kernel"], var.boot_mode)
+    error_message = "boot_mode must be 'iso' or 'kernel'."
+  }
+}
+variable "kernel_path" { type = string; default = "" }
+variable "initrd_path" { type = string; default = "" }
+variable "cmdline"     { type = string; default = "" }
 
 resource "libvirt_volume" "root" {
   name             = "${var.name}-root.qcow2"
@@ -42,6 +61,14 @@ resource "libvirt_domain" "vm" {
 
   cpu { mode = "host-passthrough" }
 
+  # Direct kernel boot (Agama): provider passes <kernel>/<initrd>/<cmdline>
+  # straight into the domain XML. Empty strings ⇒ provider omits the elements.
+  kernel  = var.boot_mode == "kernel" ? var.kernel_path : ""
+  initrd  = var.boot_mode == "kernel" ? var.initrd_path : ""
+  cmdline = var.boot_mode == "kernel" && var.cmdline != "" ? [
+    { _ = var.cmdline }
+  ] : []
+
   network_interface {
     network_id     = var.network_id
     mac            = var.mac
@@ -55,7 +82,9 @@ resource "libvirt_domain" "vm" {
     content { volume_id = disk.value.id }
   }
 
-  # Seed ISO carrying Agama or Ignition+Combustion config drive.
+  # Seed ISO carrying Agama profile or Ignition+Combustion config drive.
+  # For boot_mode=="kernel" it's mostly inert (Agama fetches by HTTP) but
+  # kept so the same disk slot serves rescue/recovery later.
   disk { file = var.seed_iso_path }
 
   console {

@@ -44,9 +44,12 @@ type Run struct {
 	Stage            Stage               `json:"stage"`
 	LastError        string              `json:"last_error,omitempty"`
 	History          []Event             `json:"history"`
-	RootPasswordHash string              `json:"root_password_hash,omitempty"` // SHA-512 crypt; injected into seeds
-	HostAdvertiseIP  string              `json:"host_advertise_ip,omitempty"`  // Windows NIC chosen for HTTP base URL
-	HTTPBaseURL      string              `json:"http_base_url,omitempty"`      // populated once server binds
+	RootPasswordHash      string              `json:"root_password_hash,omitempty"` // SHA-512 crypt; injected into seeds
+	HostAdvertiseIP       string              `json:"host_advertise_ip,omitempty"`  // Windows NIC chosen for HTTP base URL
+	HTTPBaseURL           string              `json:"http_base_url,omitempty"`      // populated once server binds
+	RKE2Token             string              `json:"rke2_token,omitempty"`         // generated once per run, kept for cluster joins
+	K3sToken              string              `json:"k3s_token,omitempty"`
+	CephDashboardPassword string              `json:"ceph_dashboard_password,omitempty"`
 }
 
 type Event struct {
