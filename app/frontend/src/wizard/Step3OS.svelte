@@ -14,6 +14,13 @@
   const showK8s  = $derived(topology === 'k8s-only'  || topology === 'combined');
   const showCeph = $derived(topology === 'ceph-only' || topology === 'combined');
 
+  // ESXi today only supports MicroOS — Leap/Tumbleweed need Agama ISO
+  // remaster (phase-1 §4) which isn't shipped. Surface the constraint
+  // here so users don't pick Leap+ESXi and discover the gate at the
+  // datastore_upload stage 5 minutes into the run.
+  const isESXi = $derived($wizardStore.inventory.target.type === 'esxi');
+  const esxiBlocked = $derived(isESXi && (k8sOS !== 'microos' || cephOS !== 'microos'));
+
   function chooseImage(role: 'k8s' | 'ceph', os: OS) {
     if (role === 'k8s') k8sOS = os;
     else cephOS = os;
@@ -41,6 +48,12 @@
   <h2>{$_('step.3.title')}</h2>
   <p>{$_('step3.perRoleHint')}</p>
 </header>
+
+{#if esxiBlocked}
+  <div class="warn">
+    ⚠ {$_('step3.esxiOnlyMicroOS')}
+  </div>
+{/if}
 
 {#if showK8s}
   <Section title={$_('step3.k8sNodes')}>
@@ -89,4 +102,7 @@
   .image-card strong { font-size: 0.9rem; }
   .image-card span { font-size: 0.8rem; color: #a1a1aa; line-height: 1.4; }
   .head { display: flex; justify-content: space-between; align-items: center; }
+  .warn { margin-bottom: 0.85rem; padding: 0.7rem 0.85rem; border-radius: 5px;
+          background: #422006; border: 1px solid #92400e; color: #fbbf24;
+          font-size: 0.82rem; line-height: 1.5; }
 </style>

@@ -103,6 +103,7 @@
   },
   "step3": {
     "perRoleHint": "Different roles can use different OSs. Typically Ceph nodes run Leap, K8s nodes run MicroOS.",
+    "esxiOnlyMicroOS": "ESXi target only supports MicroOS for unattended install in this release — Leap/Tumbleweed need Agama ISO remaster (phase-1 §4), tracked for the next milestone. Apply will fail at the datastore_upload stage with a clear error if you keep this combination.",
     "k8sNodes": "K8s nodes (control-plane / worker)",
     "cephNodes": "Ceph nodes (mon / mgr / osd / rgw)",
     "image": {

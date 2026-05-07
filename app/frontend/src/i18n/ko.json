@@ -103,6 +103,7 @@
   },
   "step3": {
     "perRoleHint": "역할별로 다른 OS를 선택할 수 있습니다. 일반적으로 Ceph 노드는 Leap, K8s 노드는 MicroOS.",
+    "esxiOnlyMicroOS": "ESXi 환경에서는 현재 MicroOS만 무인 설치 가능합니다. Leap/Tumbleweed는 Agama ISO 리마스터 (phase-1 §4)가 필요해서 일정상 다음 릴리즈로 미뤘습니다 — 'Apply' 시 데이터스토어 업로드 단계에서 차단됩니다.",
     "k8sNodes": "K8s 노드 (control-plane / worker)",
     "cephNodes": "Ceph 노드 (mon / mgr / osd / rgw)",
     "image": {
