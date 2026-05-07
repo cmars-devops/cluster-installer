@@ -18,6 +18,7 @@ package run
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -416,14 +417,32 @@ func (o *Orchestrator) markStage(s state.Stage) {
 }
 
 func (o *Orchestrator) fail(s state.Stage, err error) error {
-	o.Log.Error("orchestrator.fail", "stage", string(s), "err", err)
+	// Distinguish user-cancellation from genuine errors so the UI can offer
+	// "Resume" instead of "Retry" and the log doesn't read like a crash.
+	cancelled := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+
+	if cancelled {
+		o.Log.Info("orchestrator.cancelled", "stage", string(s))
+	} else {
+		o.Log.Error("orchestrator.fail", "stage", string(s), "err", err)
+	}
+
 	if updErr := o.Store.Update(o.Run.ID, func(r *state.Run) {
 		r.Stage = state.StageFailed
-		r.LastError = fmt.Sprintf("%s: %s", s, err)
+		if cancelled {
+			r.LastError = fmt.Sprintf("%s: cancelled by user", s)
+		} else {
+			r.LastError = fmt.Sprintf("%s: %s", s, err)
+		}
 	}); updErr != nil {
 		o.Log.Error("orchestrator.fail.update", "err", updErr)
 	}
-	o.emit("run:stage", string(state.StageFailed), err.Error())
+
+	if cancelled {
+		o.emit("run:stage", string(state.StageFailed), "cancelled by user")
+	} else {
+		o.emit("run:stage", string(state.StageFailed), err.Error())
+	}
 	return err
 }
 

@@ -84,6 +84,9 @@ export const api = {
   applyRun(id: string): Promise<void> {
     return call<void>('ApplyRun', [id], undefined);
   },
+  cancelRun(id: string): Promise<void> {
+    return call<void>('CancelRun', [id], undefined);
+  },
   resumeRun(id: string): Promise<unknown> {
     return call<unknown>('ResumeRun', [id], { id });
   },

@@ -55,6 +55,25 @@
     }
   }
 
+  let cancelling = $state(false);
+  async function cancel() {
+    if (!$wizardStore.runId || cancelling) return;
+    if (!confirm($_('step6.cancelConfirm'))) return;
+    cancelling = true;
+    lines = [...lines, '⨯ Cancelling run — waiting for current stage to abort...'];
+    try {
+      await api.cancelRun($wizardStore.runId);
+    } catch (e) {
+      lines = [...lines, 'ERROR: ' + e];
+    } finally {
+      cancelling = false;
+    }
+  }
+
+  // Cancel is enabled while a run is mid-flight — i.e. starting flag set,
+  // and the stage has not yet reached a terminal state.
+  let canCancel = $derived(starting && stage !== 'completed' && stage !== 'failed');
+
   function stageTone(s: string, current: string): 'neutral' | 'success' | 'info' | 'danger' {
     if (skipped[s]) return 'neutral';            // topology said this stage doesn't run
     const idx = stages.indexOf(s as any);
@@ -96,6 +115,12 @@
     <div class="row">
       <Button variant="primary" disabled={!$wizardStore.runId} onclick={start}>
         {$_('common.start')} →
+      </Button>
+    </div>
+  {:else if canCancel}
+    <div class="row">
+      <Button variant="danger" disabled={cancelling} onclick={cancel}>
+        ⨯ {$_('step6.cancel')}
       </Button>
     </div>
   {/if}

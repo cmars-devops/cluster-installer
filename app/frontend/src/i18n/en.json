@@ -179,6 +179,8 @@
     "serverURLHint": "VMs fetch Agama profiles from this URL",
     "firewallHint": "Windows Firewall may show an Allow dialog on first inbound — click 'Allow access'.",
     "log": "Live log",
+    "cancel": "Cancel run",
+    "cancelConfirm": "Abort the current stage and mark the run as failed. Already-created VMs are left in place (delete them separately if needed). Continue?",
     "stages": {
       "pending": "pending",
       "seed_iso": "Seed ISO render",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"sync"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -23,13 +24,19 @@ type App struct {
 	binaries embed.FS
 	log      *logging.Logger
 	store    *state.Store
+
+	// runCancels tracks the cancel function for each in-flight ApplyRun so
+	// CancelRun(runID) can interrupt the pipeline. Protected by mu.
+	mu         sync.Mutex
+	runCancels map[string]context.CancelFunc
 }
 
 func NewApp(binaries embed.FS) *App {
 	return &App{
-		binaries: binaries,
-		log:      logging.New(),
-		store:    state.New(),
+		binaries:   binaries,
+		log:        logging.New(),
+		store:      state.New(),
+		runCancels: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -97,7 +104,42 @@ func (a *App) ApplyRun(runID string) error {
 		Log:        a.log,
 		Events:     wailsEmitter{ctx: a.ctx},
 	}
-	return o.Apply(a.ctx)
+
+	// Per-run cancellable context — derived from the Wails app ctx so that
+	// quitting the app still tears the pipeline down, but CancelRun(runID)
+	// can stop a single run without killing the whole UI.
+	runCtx, cancel := context.WithCancel(a.ctx)
+	a.mu.Lock()
+	a.runCancels[runID] = cancel
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		delete(a.runCancels, runID)
+		a.mu.Unlock()
+		cancel()
+	}()
+
+	return o.Apply(runCtx)
+}
+
+// CancelRun interrupts an in-flight ApplyRun. The orchestrator detects the
+// ctx cancellation at the next stage boundary, terraform/ansible child
+// processes are killed, and the run is marked StageFailed with
+// "cancelled by user" so the wizard can offer Resume from the same point.
+//
+// CancelRun does NOT terraform-destroy half-created VMs — that's gated by a
+// separate explicit user action because partial VMs may still hold useful
+// state (logs, half-installed OS) the operator wants to inspect.
+func (a *App) CancelRun(runID string) error {
+	a.mu.Lock()
+	cancel, ok := a.runCancels[runID]
+	a.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("run %s is not currently executing", runID)
+	}
+	a.log.Info("cancel", "run", runID)
+	cancel()
+	return nil
 }
 
 // wailsEmitter adapts Wails's EventsEmit to run.Emitter.
