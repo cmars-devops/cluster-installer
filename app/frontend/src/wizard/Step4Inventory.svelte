@@ -132,51 +132,160 @@
     updateNode(idx, { roles: next });
   }
 
-  function addPreset(preset: 'k3s-1' | 'rke2-3' | 'ceph-core-3' | 'ceph-osd-3' | 'ceph-rgw-2') {
-    if (preset === 'k3s-1') {
-      addNode({ hostname: 'k3s-server-01', ip: '10.10.1.31',
-                roles: ['control-plane', 'etcd', 'worker'], os: 'microos' });
-    }
-    if (preset === 'rke2-3') {
-      const base = 31;
-      ['cp1', 'cp2', 'cp3'].forEach((h, i) => addNode({
-        hostname: h, ip: `10.10.1.${base + i}`, roles: ['control-plane', 'etcd'],
-        os: 'microos', cpu: 4, memory_gb: 8, disk_gb: 60
-      }));
-    }
-    // ── Ceph presets — IDC-validated layout (mon×3 + osd×N + rgw×2) ──
-    if (preset === 'ceph-core-3') {
-      const base = 75;
-      ['ceph-core-01', 'ceph-core-02', 'ceph-core-03'].forEach((h, i) => addNode({
-        hostname: h, ip: `10.10.1.${base + i}`,
-        roles: ['ceph-mon', 'ceph-mgr', 'ceph-mds'], os: 'leap',
-        cpu: 4, memory_gb: 8, disk_gb: 64
-      }));
-    }
-    if (preset === 'ceph-osd-3') {
-      const base = 91;
-      ['ceph-osd-01', 'ceph-osd-02', 'ceph-osd-03'].forEach((h, i) => addNode({
-        hostname: h, ip: `10.10.1.${base + i}`,
-        cluster_ip: `172.16.1.${base + i}`,
+  // ── Preset definitions — each describes a role family with sensible
+  //    defaults that operators can scale via the count combobox.
+  type PresetKind =
+    | 'k3s-single' | 'rke2-cp' | 'rke2-worker'
+    | 'ceph-core' | 'ceph-osd' | 'ceph-rgw';
+
+  type PresetSpec = {
+    kind: PresetKind;
+    color: string;                      // accent color for the preset card
+    label: string;
+    badge: string;                      // role chips summary
+    description: string;
+    hostnamePrefix: string;             // e.g. "ceph-osd"
+    ipBase: number;                     // last octet base, e.g. 91
+    cidr3: string;                      // first 3 octets
+    clusterIPBase?: number;             // optional Ceph cluster network IP
+    clusterCidr3?: string;
+    defaultCount: number;
+    countOptions: number[];             // 1..N suggestions for the combobox
+    template: Partial<NodeSpec>;        // default fields for each generated node
+  };
+
+  const PRESETS: PresetSpec[] = [
+    {
+      kind: 'k3s-single',
+      color: '#3b82f6',
+      label: 'K3s 단일 노드',
+      badge: 'control-plane · etcd · worker',
+      description: '모든 역할을 한 노드에 — 홈랩 / 빠른 검증',
+      hostnamePrefix: 'k3s',
+      ipBase: 31, cidr3: '10.10.1',
+      defaultCount: 1, countOptions: [1],
+      template: { roles: ['control-plane', 'etcd', 'worker'], os: 'microos',
+                  cpu: 4, memory_gb: 8, disk_gb: 60 }
+    },
+    {
+      kind: 'rke2-cp',
+      color: '#3b82f6',
+      label: 'RKE2 control-plane',
+      badge: 'control-plane · etcd',
+      description: 'API 서버 + etcd 멤버. HA는 3개 (홀수만 의미 있음).',
+      hostnamePrefix: 'cp',
+      ipBase: 31, cidr3: '10.10.1',
+      defaultCount: 3, countOptions: [1, 3, 5],
+      template: { roles: ['control-plane', 'etcd'], os: 'microos',
+                  cpu: 4, memory_gb: 8, disk_gb: 60 }
+    },
+    {
+      kind: 'rke2-worker',
+      color: '#3b82f6',
+      label: 'RKE2 worker',
+      badge: 'worker',
+      description: '워크로드 실행 노드. CPU/RAM은 사용 시나리오에 맞춰 키우세요.',
+      hostnamePrefix: 'worker',
+      ipBase: 41, cidr3: '10.10.1',
+      defaultCount: 3, countOptions: [1, 2, 3, 4, 5, 6, 8, 10],
+      template: { roles: ['worker'], os: 'microos',
+                  cpu: 8, memory_gb: 16, disk_gb: 120 }
+    },
+    {
+      kind: 'ceph-core',
+      color: '#f59e0b',
+      label: 'Ceph CORE',
+      badge: 'mon · mgr · mds',
+      description: 'Ceph 컨트롤 플레인 (3개 권장 — quorum 위해 홀수).',
+      hostnamePrefix: 'ceph-core',
+      ipBase: 75, cidr3: '10.10.1',
+      defaultCount: 3, countOptions: [1, 3, 5],
+      template: { roles: ['ceph-mon', 'ceph-mgr', 'ceph-mds'], os: 'leap',
+                  cpu: 4, memory_gb: 8, disk_gb: 64 }
+    },
+    {
+      kind: 'ceph-osd',
+      color: '#f59e0b',
+      label: 'Ceph OSD',
+      badge: 'osd · HDD + DB on SSD',
+      description: '데이터 보관. 노드당 HDD(/dev/sdb) + SSD(/dev/sdc for BlueStore DB). 노드별 디스크는 펼침에서 조정.',
+      hostnamePrefix: 'ceph-osd',
+      ipBase: 91, cidr3: '10.10.1',
+      clusterIPBase: 91, clusterCidr3: '172.16.1',     // OSD 백엔드 복제 네트워크
+      defaultCount: 3, countOptions: [3, 4, 5, 6, 7, 8, 10, 12],
+      template: {
         roles: ['ceph-osd'], os: 'leap',
         cpu: 4, memory_gb: 6, disk_gb: 64,
-        // IDC default OSD layout: HDD data + faster device for BlueStore DB.
-        // Operators reassign per-node in the dropdown when actual disks differ.
         data_devices: ['/dev/sdb'],
         db_devices:   ['/dev/sdc'],
         device_class: 'hdd',
         osds_per_device: 1,
         osd_encrypted: false,
-        disk_provisioning: 'thick-eager'  // OSD VMs: avoid first-write penalty
-      }));
+        disk_provisioning: 'thick-eager'   // OSD: avoid first-write penalty
+      }
+    },
+    {
+      kind: 'ceph-rgw',
+      color: '#f59e0b',
+      label: 'Ceph RGW',
+      badge: 'rgw · S3',
+      description: 'S3 호환 오브젝트 게이트웨이. HA는 2개 + 외부 LB(keepalived).',
+      hostnamePrefix: 'ceph-rgw',
+      ipBase: 81, cidr3: '10.10.1',
+      defaultCount: 2, countOptions: [1, 2, 3, 4],
+      template: { roles: ['ceph-rgw'], os: 'leap',
+                  cpu: 2, memory_gb: 4, disk_gb: 64 }
     }
-    if (preset === 'ceph-rgw-2') {
-      const base = 81;
-      ['ceph-rgw-01', 'ceph-rgw-02'].forEach((h, i) => addNode({
-        hostname: h, ip: `10.10.1.${base + i}`,
-        roles: ['ceph-rgw'], os: 'leap',
-        cpu: 2, memory_gb: 4, disk_gb: 64
-      }));
+  ];
+
+  // Per-preset count selection (UI state, not in store).
+  let presetCount = $state<Record<PresetKind, number>>(
+    Object.fromEntries(PRESETS.map(p => [p.kind, p.defaultCount])) as Record<PresetKind, number>
+  );
+
+  // Filter presets by topology so ceph-only mode hides K8s cards, etc.
+  const visiblePresets = $derived(PRESETS.filter(p => {
+    const isCeph = p.kind.startsWith('ceph-');
+    if (topology === 'ceph-only') return isCeph;
+    if (topology === 'k8s-only')  return !isCeph;
+    return true;
+  }));
+
+  function nextHostnameIndex(prefix: string): number {
+    const re = new RegExp(`^${prefix}-(\\d+)$`);
+    let max = 0;
+    for (const n of $wizardStore.inventory.nodes) {
+      const m = n.hostname.match(re);
+      if (m) max = Math.max(max, parseInt(m[1], 10));
+    }
+    return max + 1;
+  }
+
+  // ── Apply preset N times. New nodes pick up where existing same-prefix
+  //    nodes left off (ceph-osd-04, -05 if -01..-03 already exist), and the
+  //    last octet of the IP follows the same numbering so addresses stay
+  //    aligned with hostnames.
+  function addPreset(kind: PresetKind, count: number) {
+    const p = PRESETS.find(x => x.kind === kind);
+    if (!p) return;
+    let startIdx = nextHostnameIndex(p.hostnamePrefix);
+    // For k3s-single (single-node) and any preset whose first add-batch is
+    // expected to use 'NN-01', ensure we always start at 01 if no existing.
+    for (let n = 0; n < count; n++) {
+      const idx = startIdx + n;
+      const idxStr = String(idx).padStart(2, '0');
+      const lastOct = p.ipBase + idx - 1;
+      const node: Partial<NodeSpec> = {
+        ...p.template,
+        hostname: p.kind === 'k3s-single' && idx === 1
+          ? 'k3s-server-01'
+          : `${p.hostnamePrefix}-${idxStr}`,
+        ip: `${p.cidr3}.${lastOct}`
+      };
+      if (p.clusterIPBase && p.clusterCidr3) {
+        node.cluster_ip = `${p.clusterCidr3}.${p.clusterIPBase + idx - 1}`;
+      }
+      addNode(node);
     }
   }
 
@@ -212,9 +321,9 @@
     advancedOSD = { ...advancedOSD, [idx]: !advancedOSD[idx] };
   }
 
-  // Per-node row expand/collapse. Default = collapsed. Manual "+ 노드 추가"
-  // expands the new row so the user can fill it in immediately; preset-added
-  // nodes stay collapsed because their defaults are already sensible.
+  // Per-node row expand/collapse. Default collapsed; "+ 노드 추가" expands
+  // the new row so the operator can fill it in. Preset-added rows stay
+  // collapsed because their defaults are already sensible.
   let nodeExpanded = $state<Record<number, boolean>>({});
   function toggleNode(idx: number) {
     nodeExpanded = { ...nodeExpanded, [idx]: !nodeExpanded[idx] };
@@ -484,22 +593,45 @@ content:
         {/if}
       {/if}
 
-      <div class="presets">
-        <span class="muted">Presets:</span>
-        {#if topology !== 'ceph-only'}
-          <Button onclick={() => addPreset('k3s-1')}>+ K3s 단일 노드</Button>
-          <Button onclick={() => addPreset('rke2-3')}>+ RKE2 control-plane × 3</Button>
-        {/if}
-        {#if topology !== 'k8s-only'}
-          <Button onclick={() => addPreset('ceph-core-3')}>+ Ceph CORE × 3 (mon/mgr/mds)</Button>
-          <Button onclick={() => addPreset('ceph-osd-3')}>+ Ceph OSD × 3 (data + WAL)</Button>
-          <Button onclick={() => addPreset('ceph-rgw-2')}>+ Ceph RGW × 2 (S3)</Button>
-        {/if}
+      <div class="presets-head">
+        <span class="muted">프리셋 — 클릭하면 노드가 역할별 기본값으로 추가됩니다:</span>
         {#if $wizardStore.inventory.nodes.length > 0}
           <span class="bulk-divider">|</span>
           <button class="link-btn" onclick={expandAllNodes} type="button">전체 펼치기</button>
           <button class="link-btn" onclick={collapseAllNodes} type="button">전체 접기</button>
         {/if}
+      </div>
+
+      <div class="preset-grid">
+        {#each visiblePresets as p}
+          <div class="preset-card">
+            <div class="preset-card-head">
+              <span class="preset-icon" style="color: {p.color}">●</span>
+              <strong>{p.label}</strong>
+            </div>
+            <div class="preset-badge">{p.badge}</div>
+            <div class="preset-desc">{p.description}</div>
+            <div class="preset-spec">
+              {p.template.os ?? '?'} · {p.template.cpu}c/{p.template.memory_gb}G/{p.template.disk_gb}G
+              {#if p.template.data_devices}· data:{p.template.data_devices.join(',')}{/if}
+              {#if p.template.db_devices}· db:{p.template.db_devices.join(',')}{/if}
+            </div>
+            <div class="preset-actions">
+              <label class="count-label">
+                Count
+                <select bind:value={presetCount[p.kind]}>
+                  {#each p.countOptions as n}
+                    <option value={n}>{n}</option>
+                  {/each}
+                </select>
+              </label>
+              <Button variant="primary"
+                      onclick={() => addPreset(p.kind, presetCount[p.kind])}>
+                + 추가
+              </Button>
+            </div>
+          </div>
+        {/each}
       </div>
 
       {#each $wizardStore.inventory.nodes as node, i}
@@ -785,7 +917,30 @@ content:
   .role-chip input { display: none; }
 
   .add-row { margin-top: 0.5rem; }
-  .presets { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.75rem; }
+  .presets-head { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.6rem; }
+  .preset-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+                 gap: 0.6rem; margin-bottom: 1rem; }
+  .preset-card { background: #0f0f12; border: 1px solid #2a2a30; border-radius: 6px;
+                 padding: 0.7rem 0.85rem; display: flex; flex-direction: column;
+                 gap: 0.3rem; }
+  .preset-card-head { display: flex; align-items: center; gap: 0.4rem; }
+  .preset-card-head strong { font-size: 0.88rem; color: #e4e4e7; }
+  .preset-icon { font-size: 0.85rem; line-height: 1; }
+  .preset-badge { font-size: 0.7rem; color: #93c5fd; font-family: ui-monospace, monospace;
+                  background: #1e293b; padding: 0.05rem 0.4rem; border-radius: 3px;
+                  align-self: flex-start; }
+  .preset-desc { font-size: 0.74rem; color: #a1a1aa; line-height: 1.4;
+                 min-height: 2.6em; }
+  .preset-spec { font-size: 0.7rem; color: #71717a; font-family: ui-monospace, monospace; }
+  .preset-actions { display: flex; gap: 0.4rem; align-items: center;
+                    margin-top: 0.4rem; padding-top: 0.4rem;
+                    border-top: 1px solid #1e1e22; }
+  .count-label { display: flex; gap: 0.35rem; align-items: center;
+                 font-size: 0.78rem; color: #a1a1aa; flex: 1; }
+  .count-label select { width: 4.5rem; padding: 0.3rem 0.4rem; background: #1b1b1f;
+                        color: #e4e4e7; border: 1px solid #3f3f46; border-radius: 4px;
+                        font-family: inherit; font-size: 0.85rem; outline: none; }
+  .count-label select:focus { border-color: #60a5fa; }
   .muted { color: #71717a; font-size: 0.8rem; }
   .row { display: flex; gap: 0.75rem; align-items: center; margin-top: 0.5rem; }
 
