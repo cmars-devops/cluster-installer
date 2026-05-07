@@ -234,6 +234,20 @@
   {/if}
 
   <Section title="ESXi 리소스 배치">
+    {#if !discovery?.ok}
+      <details class="help">
+        <summary>💡 {$_('step2.datastoreHelpTitle')}</summary>
+        <div class="help-body">
+          <p>{$_('step2.datastoreHelpBody')}</p>
+          <ol>
+            <li><strong>{$_('step2.datastoreHelpStep1')}</strong></li>
+            <li>{$_('step2.datastoreHelpStep2')}</li>
+            <li>{$_('step2.datastoreHelpStep3')}</li>
+          </ol>
+        </div>
+      </details>
+    {/if}
+
     <Field label={$_('step2.datastore')} hint={discovery?.ok ? '' : $_('step2.datastoreHint')} required>
       {#if discovery?.ok && discovery.datastores && !manualDS}
         <select value={target.datastore}
@@ -355,4 +369,17 @@
   .warn { margin: 0.5rem 0 1.25rem; padding: 0.6rem 0.8rem; background: #292524;
           border: 1px solid #78350f; border-radius: 5px; color: #fde68a; font-size: 0.78rem;
           line-height: 1.5; }
+
+  .help { margin: 0 0 0.75rem; padding: 0; background: #0a0a0c;
+          border: 1px solid #1e3a8a; border-radius: 5px; color: #cbd5e1; }
+  .help summary { padding: 0.5rem 0.75rem; cursor: pointer; font-size: 0.82rem;
+                  color: #93c5fd; user-select: none; list-style: none; }
+  .help summary::-webkit-details-marker { display: none; }
+  .help summary::before { content: '▶ '; transition: transform 0.15s; display: inline-block; }
+  .help[open] summary::before { content: '▼ '; }
+  .help-body { padding: 0 0.75rem 0.75rem; font-size: 0.78rem; line-height: 1.6; }
+  .help-body p { margin: 0 0 0.5rem; }
+  .help-body ol { margin: 0; padding-left: 1.25rem; }
+  .help-body li { margin-bottom: 0.25rem; }
+  .help-body strong { color: #93c5fd; }
 </style>
