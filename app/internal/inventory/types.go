@@ -70,6 +70,18 @@ type NodeSpec struct {
 	CPU            int      `yaml:"cpu,omitempty" json:"cpu,omitempty"`
 	MemoryGB       int      `yaml:"memory_gb,omitempty" json:"memory_gb,omitempty"`
 	DiskGB         int      `yaml:"disk_gb,omitempty" json:"disk_gb,omitempty"`
+	// OSD device layout — only meaningful when roles includes "ceph-osd".
+	// Mirrors cephadm's OSD service spec (data_devices.paths /
+	// db_devices.paths / wal_devices.paths).
+	DataDevices    []string `yaml:"data_devices,omitempty"    json:"data_devices,omitempty"`
+	DBDevices      []string `yaml:"db_devices,omitempty"      json:"db_devices,omitempty"`
+	WALDevices     []string `yaml:"wal_devices,omitempty"     json:"wal_devices,omitempty"`
+	OSDsPerDevice  int      `yaml:"osds_per_device,omitempty" json:"osds_per_device,omitempty"`
+	OSDEncrypted   bool     `yaml:"osd_encrypted,omitempty"   json:"osd_encrypted,omitempty"`
+	DeviceClass    string   `yaml:"device_class,omitempty"    json:"device_class,omitempty"` // auto | hdd | ssd | nvme
+
+	// StorageDevices is the legacy field name — kept as a backward-compat
+	// alias for DataDevices. New inventories should use DataDevices.
 	StorageDevices []string `yaml:"storage_devices,omitempty" json:"storage_devices,omitempty"`
 	NetworkIface   string   `yaml:"network_interface,omitempty" json:"network_interface,omitempty"`
 	PrimaryMAC     string   `yaml:"primary_mac,omitempty" json:"primary_mac,omitempty"` // discovered post-VM-create
@@ -158,6 +170,19 @@ type CephSpec struct {
 	PublicNetwork  string   `yaml:"public_network" json:"public_network"`
 	ClusterNetwork string   `yaml:"cluster_network,omitempty" json:"cluster_network,omitempty"`
 	Pools          []string `yaml:"pools" json:"pools"`
+
+	// Replication is the default replica count for RBD/CephFS pools.
+	// 3 = standard, 2 = lab-only, 1 = single-node only.
+	Replication int `yaml:"replication,omitempty" json:"replication,omitempty"`
+
+	// FailureDomain is the CRUSH bucket type Ceph spreads replicas across.
+	// 'host' is the standard choice; 'rack' / 'chassis' require CRUSH
+	// topology setup; 'osd' should never be used in production.
+	FailureDomain string `yaml:"failure_domain,omitempty" json:"failure_domain,omitempty"`
+
+	// Defaults applied when per-node OSD fields are unset.
+	DefaultOSDsPerDevice int  `yaml:"default_osds_per_device,omitempty" json:"default_osds_per_device,omitempty"`
+	DefaultEncrypted     bool `yaml:"default_encrypted,omitempty"        json:"default_encrypted,omitempty"`
 }
 
 type AddonsSpec struct {

@@ -45,7 +45,12 @@
   // ── Computed Ceph health hints (live) ─────────────────────────────────
   const monCount = $derived($wizardStore.inventory.nodes.filter(n => n.roles.includes('ceph-mon')).length);
   const osdNodes = $derived($wizardStore.inventory.nodes.filter(n => n.roles.includes('ceph-osd')));
-  const osdNodesWithoutDevices = $derived(osdNodes.filter(n => !n.storage_devices || n.storage_devices.length === 0));
+  const osdNodesWithoutDevices = $derived(osdNodes.filter(n => dataDevicesOf(n).length === 0));
+  const hddOSDsWithoutDB = $derived(osdNodes.filter(n => {
+    const cls = n.device_class ?? 'auto';
+    const hasDB = (n.db_devices ?? []).length > 0;
+    return (cls === 'hdd') && !hasDB && dataDevicesOf(n).length > 0;
+  }));
 
   // Detect risky datastore concentration (same physical array hosting too
   // many quorum-critical nodes — single failure = split brain).
@@ -95,7 +100,16 @@
     }
     if (osdNodesWithoutDevices.length > 0) {
       out.push({ tone: 'danger',
-        msg: `OSD 노드 ${osdNodesWithoutDevices.length}개에 storage_devices 미설정 — cephadm이 디스크를 찾지 못합니다. 각 OSD 행의 'Storage devices' 필드에 /dev/sdb 형식으로 입력.` });
+        msg: `OSD 노드 ${osdNodesWithoutDevices.length}개에 Data devices 미설정 — cephadm이 디스크를 찾지 못합니다. 각 OSD 행의 'Data devices' 필드에 /dev/sdb 형식으로 입력.` });
+    }
+    if (hddOSDsWithoutDB.length > 0) {
+      out.push({ tone: 'warn',
+        msg: `HDD OSD 노드 ${hddOSDsWithoutDB.length}개가 BlueStore DB를 분리하지 않음 — DB/WAL을 SSD로 빼면 throughput 4-8× 개선. 각 OSD 행 '고급 OSD 옵션'의 'DB/WAL devices'에 SSD 경로 입력 권장.` });
+    }
+    const replication = $wizardStore.inventory.ceph.replication ?? 3;
+    if (osdNodes.length > 0 && replication > osdNodes.length) {
+      out.push({ tone: 'danger',
+        msg: `Replica ${replication} 설정인데 OSD 노드 ${osdNodes.length}개 — Ceph는 같은 host에 동일 PG 복제를 두지 않으므로 PG가 'undersized'/'degraded' 상태가 됩니다. 노드를 늘리거나 'OSD 기본값' 섹션의 복제 수를 ${osdNodes.length} 이하로 낮추세요.` });
     }
     const thinOSDs = osdNodes.filter(n => (n.disk_provisioning ?? 'thin') === 'thin').length;
     if (thinOSDs > 0) {
@@ -146,7 +160,14 @@
         cluster_ip: `172.16.1.${base + i}`,
         roles: ['ceph-osd'], os: 'leap',
         cpu: 4, memory_gb: 6, disk_gb: 64,
-        storage_devices: ['/dev/sdb', '/dev/sdc']  // sdb=data, sdc=WAL/DB
+        // IDC default OSD layout: HDD data + faster device for BlueStore DB.
+        // Operators reassign per-node in the dropdown when actual disks differ.
+        data_devices: ['/dev/sdb'],
+        db_devices:   ['/dev/sdc'],
+        device_class: 'hdd',
+        osds_per_device: 1,
+        osd_encrypted: false,
+        disk_provisioning: 'thick-eager'  // OSD VMs: avoid first-write penalty
       }));
     }
     if (preset === 'ceph-rgw-2') {
@@ -159,12 +180,36 @@
     }
   }
 
-  function storageDevicesText(n: NodeSpec): string {
-    return (n.storage_devices ?? []).join(', ');
+  // ── OSD device helpers ────────────────────────────────────────────────
+  // data_devices is the canonical field; storage_devices is kept as a
+  // legacy alias so older inventories still load. We always read both
+  // when emitting, but only WRITE data_devices on edit.
+  function dataDevicesOf(n: NodeSpec): string[] {
+    return n.data_devices ?? n.storage_devices ?? [];
   }
-  function setStorageDevices(idx: number, text: string) {
-    const list = text.split(',').map(s => s.trim()).filter(Boolean);
-    updateNode(idx, { storage_devices: list });
+  function devicesText(arr: string[] | undefined): string {
+    return (arr ?? []).join(', ');
+  }
+  function parseDevices(text: string): string[] {
+    return text.split(',').map(s => s.trim()).filter(Boolean);
+  }
+  function setDataDevices(idx: number, text: string) {
+    updateNode(idx, { data_devices: parseDevices(text), storage_devices: undefined });
+  }
+  function setDBDevices(idx: number, text: string) {
+    const list = parseDevices(text);
+    updateNode(idx, { db_devices: list.length > 0 ? list : undefined });
+  }
+
+  function updateCephDefaults(patch: Partial<typeof $wizardStore.inventory.ceph>) {
+    updateCeph(patch);
+  }
+
+  // Toggle the per-node "advanced OSD options" panel. Tracked outside the
+  // store because it's purely UI state.
+  let advancedOSD = $state<Record<number, boolean>>({});
+  function toggleAdvanced(idx: number) {
+    advancedOSD = { ...advancedOSD, [idx]: !advancedOSD[idx] };
   }
 
   // Live YAML preview
@@ -333,6 +378,43 @@ content:
           </div>
         </Field>
 
+        <div class="osd-defaults-head">OSD 기본값 (모든 OSD 노드에 적용, 노드별 override 가능)</div>
+        <div class="grid-3">
+          <Field label="복제 수 (replica)"
+                 hint="RBD/CephFS 풀의 기본 replica. 3 = 표준 (host 2개 손실 OK), 2 = 랩 전용, 1 = 단일 노드만.">
+            <select value={String($wizardStore.inventory.ceph.replication ?? 3)}
+                    onchange={(e) => updateCeph({ replication: +(e.target as HTMLSelectElement).value })}>
+              <option value="3">3 (표준 — 권장)</option>
+              <option value="2">2 (랩 전용)</option>
+              <option value="1">1 (단일 노드)</option>
+              <option value="4">4 (고가용)</option>
+              <option value="5">5 (최고가용)</option>
+            </select>
+          </Field>
+          <Field label="Failure domain (CRUSH)"
+                 hint="복제본을 분산할 단위. 'host': 노드 단위(표준), 'rack'/'chassis': CRUSH 토폴로지 사전 설정 필요, 'osd': 비권장.">
+            <select value={$wizardStore.inventory.ceph.failure_domain ?? 'host'}
+                    onchange={(e) => updateCeph({ failure_domain: (e.target as HTMLSelectElement).value as 'host' | 'rack' | 'chassis' | 'osd' })}>
+              <option value="host">host (표준)</option>
+              <option value="rack">rack</option>
+              <option value="chassis">chassis</option>
+              <option value="osd">osd (비권장)</option>
+            </select>
+          </Field>
+          <Field label="기본 OSDs per device"
+                 hint="노드별 osds_per_device가 비어있을 때 사용. 일반 클러스터: 1.">
+            <input type="number" min="1" max="16"
+                   value={$wizardStore.inventory.ceph.default_osds_per_device ?? 1}
+                   oninput={(e) => updateCeph({ default_osds_per_device: +(e.target as HTMLInputElement).value || 1 })} />
+          </Field>
+        </div>
+        <label class="checkbox">
+          <input type="checkbox"
+                 checked={$wizardStore.inventory.ceph.default_encrypted ?? false}
+                 onchange={(e) => updateCeph({ default_encrypted: (e.target as HTMLInputElement).checked })} />
+          <span>모든 OSD 기본 dm-crypt 암호화 (노드별 override 가능)</span>
+        </label>
+
         {#if cephHints.length > 0 || datastoreHints.length > 0}
           <div class="ceph-hints">
             {#each cephHints as h}
@@ -468,14 +550,72 @@ content:
           </Field>
 
           {#if node.roles.includes('ceph-osd')}
-            <Field label="Storage devices (OSD 데이터 디스크)"
-                   hint="cephadm이 BlueStore OSD로 사용할 블록 디바이스 목록 (쉼표 구분). 첫 번째=data, 두 번째=WAL/DB. 예: /dev/sdb, /dev/sdc. 이 디스크들도 위 '설치 디스크 위치'와 같은 데이터스토어에 생성됩니다."
-                   error={(node.storage_devices ?? []).length === 0 ? '최소 1개 디바이스 필요 — 비어있으면 cephadm bootstrap이 OSD를 생성할 수 없습니다' : ''}
-                   required>
-              <input value={storageDevicesText(node)}
-                     oninput={(e) => setStorageDevices(i, (e.target as HTMLInputElement).value)}
-                     placeholder="/dev/sdb, /dev/sdc" />
-            </Field>
+            <div class="osd-section">
+              <div class="osd-head">OSD 디스크 명세</div>
+
+              <div class="grid-2">
+                <Field label="Data devices (OSD 데이터)"
+                       hint="cephadm이 BlueStore OSD data로 사용할 블록 디바이스. 일반적으로 HDD. 예: /dev/sdb, /dev/sdc"
+                       error={dataDevicesOf(node).length === 0 ? '최소 1개 필요 — cephadm bootstrap이 OSD를 만들지 못합니다' : ''}
+                       required>
+                  <input value={devicesText(dataDevicesOf(node))}
+                         oninput={(e) => setDataDevices(i, (e.target as HTMLInputElement).value)}
+                         placeholder="/dev/sdb, /dev/sdc" />
+                </Field>
+
+                <Field label="DB/WAL devices (BlueStore 메타)"
+                       hint={(node.device_class ?? 'auto') === 'hdd'
+                         ? '⚡ HDD에 강력 권장 — SSD/NVMe 경로 입력 시 OSD throughput 4-8× 개선 (BlueStore rocksdb를 SSD로 분리). 비워두면 data device 자체에 함께 저장.'
+                         : '선택 — SSD/NVMe 경로 입력 시 BlueStore DB를 분리. 비워두면 data device에 함께 저장.'}>
+                  <input value={devicesText(node.db_devices)}
+                         oninput={(e) => setDBDevices(i, (e.target as HTMLInputElement).value)}
+                         placeholder="/dev/nvme0n1" />
+                </Field>
+              </div>
+
+              <button class="advanced-toggle" onclick={() => toggleAdvanced(i)} type="button">
+                {advancedOSD[i] ? '▼' : '▶'} 고급 OSD 옵션
+              </button>
+
+              {#if advancedOSD[i]}
+                <div class="grid-3 osd-advanced">
+                  <Field label="Device class (CRUSH)"
+                         hint="auto: 디스크 종류 자동 감지. hdd/ssd/nvme: 명시 — Ceph 풀 규칙에서 tier 분리 시 사용.">
+                    <select value={node.device_class ?? 'auto'}
+                            onchange={(e) => updateNode(i, { device_class: (e.target as HTMLSelectElement).value as 'auto' | 'hdd' | 'ssd' | 'nvme' })}>
+                      <option value="auto">auto (감지)</option>
+                      <option value="hdd">hdd</option>
+                      <option value="ssd">ssd</option>
+                      <option value="nvme">nvme</option>
+                    </select>
+                  </Field>
+
+                  <Field label="OSDs per device"
+                         hint="data device 1개당 OSD 데몬 수. HDD/SATA SSD는 1, 고IOPS NVMe는 2-4 (병렬 큐).">
+                    <input type="number" min="1" max="16"
+                           value={node.osds_per_device ?? 1}
+                           oninput={(e) => updateNode(i, { osds_per_device: +(e.target as HTMLInputElement).value || 1 })} />
+                  </Field>
+
+                  <Field label="암호화 (dm-crypt)"
+                         hint="OSD 데이터를 dm-crypt로 at-rest 암호화. 약간의 CPU 오버헤드 (AES-NI 있으면 미미).">
+                    <label class="enc-row">
+                      <input type="checkbox"
+                             checked={node.osd_encrypted ?? ($wizardStore.inventory.ceph.default_encrypted ?? false)}
+                             onchange={(e) => updateNode(i, { osd_encrypted: (e.target as HTMLInputElement).checked })} />
+                      <span>{node.osd_encrypted ? 'enabled' : 'disabled'}</span>
+                    </label>
+                  </Field>
+
+                  <Field label="WAL devices (별도, 드물게 사용)"
+                         hint="DB와 분리된 WAL 위치. 거의 안 씀 — 보통 DB devices에 자동 포함. 명시하지 않으면 빈 채로 두세요.">
+                    <input value={devicesText(node.wal_devices)}
+                           oninput={(e) => updateNode(i, { wal_devices: parseDevices((e.target as HTMLInputElement).value).length > 0 ? parseDevices((e.target as HTMLInputElement).value) : undefined })}
+                           placeholder="(empty)" />
+                  </Field>
+                </div>
+              {/if}
+            </div>
           {/if}
         </div>
       {/each}
@@ -570,4 +710,27 @@ content:
                               color: #86efac; }
   .discovery-banner.missing { background: #78350f20; border: 1px solid #d97706;
                               color: #fde68a; }
+
+  .osd-section { margin-top: 0.6rem; padding: 0.7rem 0.8rem;
+                 background: #1a1410; border: 1px solid #422006;
+                 border-radius: 5px; }
+  .osd-head { font-size: 0.75rem; color: #f59e0b; font-weight: 600;
+              text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
+  .advanced-toggle { background: none; border: none; color: #93c5fd; cursor: pointer;
+                     font-size: 0.78rem; padding: 0.4rem 0; margin-top: 0.5rem;
+                     font-family: inherit; }
+  .advanced-toggle:hover { text-decoration: underline; }
+  .osd-advanced { margin-top: 0.5rem; padding-top: 0.5rem;
+                  border-top: 1px dashed #44403c; }
+  .enc-row { display: flex; gap: 0.5rem; align-items: center;
+             padding: 0.45rem 0.6rem; background: #0f0f12;
+             border: 1px solid #3f3f46; border-radius: 5px;
+             font-size: 0.85rem; cursor: pointer; }
+  .enc-row input { accent-color: #f59e0b; }
+
+  .osd-defaults-head { font-size: 0.75rem; color: #f59e0b; font-weight: 600;
+                       text-transform: uppercase; letter-spacing: 0.05em;
+                       margin: 0.75rem 0 0.4rem; padding-top: 0.6rem;
+                       border-top: 1px solid #2a2a30; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; }
 </style>

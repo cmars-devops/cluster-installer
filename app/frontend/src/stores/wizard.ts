@@ -4,6 +4,8 @@ export type Role =
   | 'control-plane' | 'etcd' | 'worker'
   | 'ceph-mon' | 'ceph-mgr' | 'ceph-osd' | 'ceph-mds' | 'ceph-rgw';
 
+export type DeviceClass = 'auto' | 'hdd' | 'ssd' | 'nvme';
+
 export interface NodeSpec {
   hostname: string;
   ip: string;
@@ -13,6 +15,32 @@ export interface NodeSpec {
   cpu: number;
   memory_gb: number;
   disk_gb: number;
+
+  // ── OSD-specific (only meaningful when roles includes 'ceph-osd') ─────
+  /** Devices that hold OSD data (BlueStore data partition).
+   *  Typically HDDs in a hybrid setup, or SSDs/NVMe in an all-flash one.
+   *  Required for ceph-osd nodes.
+   *  Example: ['/dev/sdb', '/dev/sdc'] */
+  data_devices?: string[];
+  /** Optional: devices that hold BlueStore DB (rocksdb). Strongly
+   *  recommended when data_devices are HDDs — placing DB on SSD/NVMe
+   *  improves OSD throughput 4-8×. cephadm will partition these
+   *  automatically across the OSDs sharing them.
+   *  Example: ['/dev/nvme0n1'] */
+  db_devices?: string[];
+  /** Optional separate WAL location. Rare — usually shares db_devices. */
+  wal_devices?: string[];
+  /** OSD daemons per device. Default 1. Set higher for very-high-IOPS
+   *  NVMe to keep all queues busy. */
+  osds_per_device?: number;
+  /** dm-crypt encryption-at-rest for OSD data. Default false. */
+  osd_encrypted?: boolean;
+  /** CRUSH device class — used by Ceph rules to differentiate fast vs
+   *  slow tiers. 'auto' lets ceph detect from rotational flag. */
+  device_class?: DeviceClass;
+
+  /** @deprecated Backward compat alias for data_devices. New inventories
+   *  should use data_devices/db_devices instead. */
   storage_devices?: string[];
   /** Per-node placement override — which datastore (ESXi/Proxmox) or
    *  storage pool (libvirt) holds this VM's virtual disks.
@@ -76,7 +104,24 @@ export interface Inventory {
     advertise_ip: string;
   };
   nodes: NodeSpec[];
-  ceph: { mode: 'external' | 'rook'; public_network: string; cluster_network: string; pools: string[] };
+  ceph: {
+    mode: 'external' | 'rook';
+    public_network: string;
+    cluster_network: string;
+    pools: string[];
+    /** Replica count for the default RBD/CephFS pools. 3 = standard
+     *  fault tolerance; 2 trades safety for capacity (only viable in
+     *  small labs); 1 = no replication, single-node only. */
+    replication?: number;
+    /** CRUSH failure domain — Ceph spreads replicas across distinct
+     *  units of this type. 'host' is the default and works for most
+     *  clusters. 'rack'/'chassis' need CRUSH topology configured. */
+    failure_domain?: 'host' | 'rack' | 'chassis' | 'osd';
+    /** Default for OSDs that don't override per-node. */
+    default_osds_per_device?: number;
+    /** Default dm-crypt encryption for OSDs. */
+    default_encrypted?: boolean;
+  };
   addons: { ingress: 'ingress-nginx' | 'traefik' | 'none'; cert_manager: boolean;
             monitoring: 'kube-prometheus-stack' | 'none'; gitops: 'argocd' | 'flux' | 'none' };
   content: { ref: string; repo: string };
@@ -135,7 +180,11 @@ const defaultInventory: Inventory = {
     mode: 'external',
     public_network: '10.10.1.0/24',
     cluster_network: '172.16.1.0/24',
-    pools: ['rbd', 'cephfs']
+    pools: ['rbd', 'cephfs'],
+    replication: 3,
+    failure_domain: 'host',
+    default_osds_per_device: 1,
+    default_encrypted: false
   },
   addons: {
     ingress: 'ingress-nginx',
