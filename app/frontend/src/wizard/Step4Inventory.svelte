@@ -36,10 +36,48 @@
     updateCeph({ pools: next });
   }
 
+  // ── Discovered datastores (from Step 2 ESXi/Proxmox discovery) ────────
+  const datastoreOptions = $derived(
+    ($wizardStore.discovered.datastores ?? [])
+      .filter((d) => d.accessible !== false)
+  );
+
   // ── Computed Ceph health hints (live) ─────────────────────────────────
   const monCount = $derived($wizardStore.inventory.nodes.filter(n => n.roles.includes('ceph-mon')).length);
   const osdNodes = $derived($wizardStore.inventory.nodes.filter(n => n.roles.includes('ceph-osd')));
   const osdNodesWithoutDevices = $derived(osdNodes.filter(n => !n.storage_devices || n.storage_devices.length === 0));
+
+  // Detect risky datastore concentration (same physical array hosting too
+  // many quorum-critical nodes — single failure = split brain).
+  const datastoreUsage = $derived.by(() => {
+    const counts: Record<string, { mons: number; osds: number; total: number }> = {};
+    for (const n of $wizardStore.inventory.nodes) {
+      const ds = n.datastore || $wizardStore.inventory.target.datastore || '<default>';
+      counts[ds] ??= { mons: 0, osds: 0, total: 0 };
+      counts[ds].total++;
+      if (n.roles.includes('ceph-mon')) counts[ds].mons++;
+      if (n.roles.includes('ceph-osd')) counts[ds].osds++;
+    }
+    return counts;
+  });
+  const datastoreHints = $derived.by(() => {
+    if (!showCeph) return [] as { tone: 'warn'; msg: string }[];
+    const out: { tone: 'warn'; msg: string }[] = [];
+    for (const [ds, c] of Object.entries(datastoreUsage)) {
+      // Quorum risk: 2+ mons on same datastore — losing that array kills
+      // quorum even if other nodes are healthy.
+      if (c.mons >= 2 && monCount >= 3) {
+        out.push({ tone: 'warn',
+          msg: `데이터스토어 '${ds}'에 mon 노드가 ${c.mons}개 — 같은 어레이 장애 시 quorum 손실 위험. 다른 데이터스토어로 분산 권장.` });
+      }
+      // OSD concentration: more than half OSDs on same datastore.
+      if (c.osds >= 3 && osdNodes.length > 0 && c.osds > osdNodes.length / 2) {
+        out.push({ tone: 'warn',
+          msg: `데이터스토어 '${ds}'에 OSD ${c.osds}/${osdNodes.length}개 집중 — failure domain 분산 권장.` });
+      }
+    }
+    return out;
+  });
   const cephHints = $derived.by(() => {
     if (!showCeph) return [];
     const out: { tone: 'warn' | 'danger' | 'info'; msg: string }[] = [];
@@ -290,11 +328,17 @@ content:
           </div>
         </Field>
 
-        {#if cephHints.length > 0}
+        {#if cephHints.length > 0 || datastoreHints.length > 0}
           <div class="ceph-hints">
             {#each cephHints as h}
               <div class="hint-row hint-{h.tone}">
                 <Badge tone={h.tone}>{h.tone === 'danger' ? '필수' : '권장'}</Badge>
+                <span>{h.msg}</span>
+              </div>
+            {/each}
+            {#each datastoreHints as h}
+              <div class="hint-row hint-{h.tone}">
+                <Badge tone={h.tone}>분산</Badge>
                 <span>{h.msg}</span>
               </div>
             {/each}
@@ -357,6 +401,25 @@ content:
                      oninput={(e) => updateNode(i, { disk_gb: +(e.target as HTMLInputElement).value || 10 })} />
             </Field>
           </div>
+          <Field label="설치 디스크 위치 (datastore / storage pool)"
+                 hint={datastoreOptions.length > 0
+                   ? '이 VM의 OS 디스크와 추가 디스크가 위치할 곳. 비워두면 클러스터 기본값(' + ($wizardStore.inventory.target.datastore || '없음') + ') 사용. 같은 데이터스토어가 너무 몰리면 단일 어레이 장애로 전체 다운될 수 있으니 분산 권장.'
+                   : '클러스터 기본값(target.datastore)을 사용하려면 비워두세요. Step 2 ESXi 토폴로지에서 "연결 + 리소스 가져오기"를 누르면 실제 데이터스토어 목록이 드롭다운에 채워집니다.'}>
+            {#if datastoreOptions.length > 0}
+              <select value={node.datastore ?? ''}
+                      onchange={(e) => updateNode(i, { datastore: (e.target as HTMLSelectElement).value || undefined })}>
+                <option value="">— 클러스터 기본값({$wizardStore.inventory.target.datastore || '미지정'}) —</option>
+                {#each datastoreOptions as ds}
+                  <option value={ds.name}>{ds.name} {ds.free_gb ? `(${ds.free_gb.toFixed(0)} GB free)` : ''}</option>
+                {/each}
+              </select>
+            {:else}
+              <input value={node.datastore ?? ''}
+                     oninput={(e) => updateNode(i, { datastore: (e.target as HTMLInputElement).value || undefined })}
+                     placeholder={'(blank → ' + ($wizardStore.inventory.target.datastore || 'cluster default') + ')'} />
+            {/if}
+          </Field>
+
           <Field label={$_('step4.node.roles')}>
             <div class="roles">
               {#each visibleRoles as r}
@@ -372,7 +435,7 @@ content:
 
           {#if node.roles.includes('ceph-osd')}
             <Field label="Storage devices (OSD 데이터 디스크)"
-                   hint="cephadm이 BlueStore OSD로 사용할 블록 디바이스 목록 (쉼표 구분). 첫 번째=data, 두 번째=WAL/DB. 예: /dev/sdb, /dev/sdc"
+                   hint="cephadm이 BlueStore OSD로 사용할 블록 디바이스 목록 (쉼표 구분). 첫 번째=data, 두 번째=WAL/DB. 예: /dev/sdb, /dev/sdc. 이 디스크들도 위 '설치 디스크 위치'와 같은 데이터스토어에 생성됩니다."
                    error={(node.storage_devices ?? []).length === 0 ? '최소 1개 디바이스 필요 — 비어있으면 cephadm bootstrap이 OSD를 생성할 수 없습니다' : ''}
                    required>
               <input value={storageDevicesText(node)}

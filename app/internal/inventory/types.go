@@ -74,6 +74,11 @@ type NodeSpec struct {
 	NetworkIface   string   `yaml:"network_interface,omitempty" json:"network_interface,omitempty"`
 	PrimaryMAC     string   `yaml:"primary_mac,omitempty" json:"primary_mac,omitempty"` // discovered post-VM-create
 	SSHAuthKeys    []string `yaml:"ssh_authorized_keys,omitempty" json:"ssh_authorized_keys,omitempty"`
+
+	// Datastore overrides target.Datastore for THIS node only. Common pattern:
+	// distribute Ceph CORE / OSD nodes across different physical arrays so a
+	// single hardware failure can't take quorum down. Blank = inherit cluster.
+	Datastore string `yaml:"datastore,omitempty" json:"datastore,omitempty"`
 }
 
 // HasRole is a template helper.

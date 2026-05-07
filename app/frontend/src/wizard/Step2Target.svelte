@@ -84,6 +84,18 @@
       result = { ok: false, error: String(e) };
     }
     discovery = result;
+    // Surface discovered resources to other steps (Step 4 needs the
+    // datastore list for per-node placement).
+    if (result.ok) {
+      wizardStore.update((s) => ({
+        ...s,
+        discovered: {
+          host: result.host,
+          datastores: result.datastores,
+          networks: result.networks
+        }
+      }));
+    }
     testing = false;
   }
 

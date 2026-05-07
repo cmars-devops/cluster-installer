@@ -14,17 +14,18 @@ import (
 // libvirtNodeVar matches the object shape declared in
 // content/terraform/stacks/libvirt/main.tf > variable "nodes".
 type libvirtNodeVar struct {
-	Name          string   `json:"name"`
-	MemoryMB      int      `json:"memory_mb"`
-	VCPU          int      `json:"vcpu"`
-	DiskGB        int      `json:"disk_gb"`
-	ExtraDisksGB  []int    `json:"extra_disks_gb"`
-	SeedISOPath   string   `json:"seed_iso_path"`
-	MAC           string   `json:"mac,omitempty"`
-	BootMode      string   `json:"boot_mode"`           // "kernel" (Agama) or "iso" (Combustion)
-	KernelPath    string   `json:"kernel_path,omitempty"`
-	InitrdPath    string   `json:"initrd_path,omitempty"`
-	Cmdline       string   `json:"cmdline,omitempty"`
+	Name          string `json:"name"`
+	MemoryMB      int    `json:"memory_mb"`
+	VCPU          int    `json:"vcpu"`
+	DiskGB        int    `json:"disk_gb"`
+	ExtraDisksGB  []int  `json:"extra_disks_gb"`
+	SeedISOPath   string `json:"seed_iso_path"`
+	MAC           string `json:"mac,omitempty"`
+	Pool          string `json:"pool,omitempty"`         // libvirt storage pool override (per-node)
+	BootMode      string `json:"boot_mode"`              // "kernel" (Agama) or "iso" (Combustion)
+	KernelPath    string `json:"kernel_path,omitempty"`
+	InitrdPath    string `json:"initrd_path,omitempty"`
+	Cmdline       string `json:"cmdline,omitempty"`
 }
 
 // proxmoxNodeVar matches content/terraform/stacks/proxmox/main.tf > variable "nodes".
@@ -36,6 +37,7 @@ type proxmoxNodeVar struct {
 	ExtraDisksGB []int  `json:"extra_disks_gb"`
 	SeedISOID    string `json:"seed_iso_id"`
 	MAC          string `json:"mac,omitempty"`
+	DatastoreID  string `json:"datastore_id,omitempty"` // Proxmox storage override (per-node)
 }
 
 // renderTFVars writes runs/<id>/terraform/tfvars.json. Returns the path.
@@ -74,6 +76,7 @@ func (o *Orchestrator) writeLibvirtTFVars(path string) error {
 			DiskGB:       defaultInt(n.DiskGB, 40),
 			ExtraDisksGB: extraDisksFor(n),
 			MAC:          n.PrimaryMAC,
+			Pool:         n.Datastore, // libvirt pool override (per-node) — empty = stack default
 		}
 		// Combustion ISO is always packed; Agama uses direct kernel boot.
 		isoPath := filepath.Join(o.stagingDir, "seeds", "seed-"+n.Hostname+".iso")
@@ -121,6 +124,7 @@ func (o *Orchestrator) writeProxmoxTFVars(path string) error {
 			DiskGB:       defaultInt(n.DiskGB, 40),
 			ExtraDisksGB: extraDisksFor(n),
 			MAC:          n.PrimaryMAC,
+			DatastoreID:  n.Datastore, // Proxmox storage override (per-node)
 			// TODO: Proxmox seed ISOs need to be uploaded to the PVE storage
 			// before TF runs. The orchestrator must call the Proxmox API to
 			// upload staging/seeds/*.iso into the chosen iso datastore and

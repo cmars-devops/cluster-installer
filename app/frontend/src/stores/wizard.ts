@@ -14,6 +14,10 @@ export interface NodeSpec {
   memory_gb: number;
   disk_gb: number;
   storage_devices?: string[];
+  /** Per-node placement override — which datastore (ESXi/Proxmox) or
+   *  storage pool (libvirt) holds this VM's virtual disks.
+   *  Blank = use the cluster-level target.datastore. */
+  datastore?: string;
 }
 
 export type Topology = 'ceph-only' | 'k8s-only' | 'combined';
@@ -66,12 +70,19 @@ export interface Inventory {
   content: { ref: string; repo: string };
 }
 
+export interface DiscoveredResources {
+  datastores?: Array<{ name: string; type?: string; free_gb?: number; capacity_gb?: number; accessible?: boolean }>;
+  networks?: Array<{ name: string; vswitch?: string; vlan_id?: number }>;
+  host?: { name: string; version: string; build: string; api_type: string };
+}
+
 export interface WizardState {
   step: number;
   mode: 'new' | 'resume';
   runId: string | null;
   contentDir: string | null;
   inventory: Inventory;
+  discovered: DiscoveredResources;   // populated by Step 2 ESXi discovery; consumed by Step 4
   errors: string[];
 }
 
@@ -129,6 +140,7 @@ export const wizardStore = writable<WizardState>({
   runId: null,
   contentDir: null,
   inventory: defaultInventory,
+  discovered: {},
   errors: []
 });
 

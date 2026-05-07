@@ -86,6 +86,10 @@
             "type": "array",
             "items": { "type": "string", "pattern": "^/dev/" }
           },
+          "datastore": {
+            "type": "string",
+            "description": "Per-node override of target.datastore. Used to distribute VMs across physical arrays for fault tolerance (Ceph mon quorum, etc.). Blank = inherit cluster-level value."
+          },
           "ssh_authorized_keys": { "type": "array", "items": { "type": "string" } }
         }
       }

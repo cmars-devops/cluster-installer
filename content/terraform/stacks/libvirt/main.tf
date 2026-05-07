@@ -28,6 +28,7 @@ variable "nodes" {
     extra_disks_gb = list(number)
     seed_iso_path  = string
     mac            = optional(string)
+    pool           = optional(string, "")       # per-node libvirt storage pool override
     boot_mode      = optional(string, "iso")    # "iso" (Combustion) or "kernel" (Agama)
     kernel_path    = optional(string, "")
     initrd_path    = optional(string, "")
@@ -47,7 +48,8 @@ module "vm" {
   seed_iso_path  = each.value.seed_iso_path
   base_volume_id = var.base_volume_id
   network_id     = var.network_id
-  pool           = var.pool
+  # Per-node pool override falls back to the stack-level default pool.
+  pool           = each.value.pool != "" ? each.value.pool : var.pool
   mac            = each.value.mac
 
   boot_mode      = each.value.boot_mode
