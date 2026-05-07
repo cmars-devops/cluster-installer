@@ -37,13 +37,16 @@ const (
 )
 
 type Run struct {
-	ID         string              `json:"id"`
-	CreatedAt  time.Time           `json:"created_at"`
-	UpdatedAt  time.Time           `json:"updated_at"`
-	Inventory  inventory.Inventory `json:"inventory"`
-	Stage      Stage               `json:"stage"`
-	LastError  string              `json:"last_error,omitempty"`
-	History    []Event             `json:"history"`
+	ID               string              `json:"id"`
+	CreatedAt        time.Time           `json:"created_at"`
+	UpdatedAt        time.Time           `json:"updated_at"`
+	Inventory        inventory.Inventory `json:"inventory"`
+	Stage            Stage               `json:"stage"`
+	LastError        string              `json:"last_error,omitempty"`
+	History          []Event             `json:"history"`
+	RootPasswordHash string              `json:"root_password_hash,omitempty"` // SHA-512 crypt; injected into seeds
+	HostAdvertiseIP  string              `json:"host_advertise_ip,omitempty"`  // Windows NIC chosen for HTTP base URL
+	HTTPBaseURL      string              `json:"http_base_url,omitempty"`      // populated once server binds
 }
 
 type Event struct {

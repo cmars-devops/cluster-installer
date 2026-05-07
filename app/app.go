@@ -5,9 +5,12 @@ import (
 	"embed"
 	"fmt"
 
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+
 	"github.com/triangles-co-kr/cluster-installer/internal/content"
 	"github.com/triangles-co-kr/cluster-installer/internal/inventory"
 	"github.com/triangles-co-kr/cluster-installer/internal/logging"
+	"github.com/triangles-co-kr/cluster-installer/internal/run"
 	"github.com/triangles-co-kr/cluster-installer/internal/runtime"
 	"github.com/triangles-co-kr/cluster-installer/internal/state"
 )
@@ -67,10 +70,40 @@ func (a *App) PlanRun(runID string) (string, error) {
 	return "", fmt.Errorf("PlanRun: not implemented")
 }
 
-// ApplyRun executes the full pipeline (TF apply → SSH wait → Ansible 00→40).
-// Streams events back to the frontend via runtime.EventsEmit.
+// ApplyRun executes the full pipeline:
+//   1. Bind embedded HTTP server on the Windows NIC reachable to the target.
+//   2. Render Agama profiles (HTTP-served) + Combustion ISOs (CD-attach) into
+//      a per-run staging directory.
+//   3. terraform apply (libvirt/Proxmox) — VMs boot, fetch profiles, install OS.
+//   4. SSH wait → Ansible 00→40 → finalize.
+//
+// Streams progress to the Svelte frontend via Wails events:
+//   - run:server-listening  { url: "http://10.10.1.99:54321" }
+//   - run:firewall-hint     { url, note }
+//   - run:stage             stage name
+//   - run:line              one log line
 func (a *App) ApplyRun(runID string) error {
-	return fmt.Errorf("ApplyRun: not implemented")
+	r, err := a.store.Load(runID)
+	if err != nil {
+		return fmt.Errorf("load run: %w", err)
+	}
+	contentDir := runtime.ContentDir() + "/" + r.Inventory.Content.Ref
+	o := &run.Orchestrator{
+		Run:        &r,
+		ContentDir: contentDir,
+		Inventory:  r.Inventory,
+		Store:      a.store,
+		Log:        a.log,
+		Events:     wailsEmitter{ctx: a.ctx},
+	}
+	return o.Apply(a.ctx)
+}
+
+// wailsEmitter adapts Wails's EventsEmit to run.Emitter.
+type wailsEmitter struct{ ctx context.Context }
+
+func (w wailsEmitter) Emit(name string, data ...interface{}) {
+	wailsruntime.EventsEmit(w.ctx, name, data...)
 }
 
 // CreateRun starts a new run from a validated inventory.

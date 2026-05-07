@@ -25,14 +25,18 @@ type Server struct {
 	Root string // directory served at /
 	Bind string // e.g. "0.0.0.0:0" for ephemeral
 
-	srv  *http.Server
-	addr net.Addr
-	mu   sync.Mutex
+	srv   *http.Server
+	addr  net.Addr
+	ready chan struct{}
+	mu    sync.Mutex
 }
 
 // Start binds the listener and serves until ctx is cancelled or Stop is called.
 // Returns the actual TCP address that's listening (host:port). Pass Bind = ""
 // to default to "0.0.0.0:0" (ephemeral port — caller reads URL() afterwards).
+//
+// Use WaitReady(ctx) from another goroutine to block until the listener is
+// bound and URL()/ServePath() return real values.
 func (s *Server) Start(ctx context.Context) error {
 	bind := s.Bind
 	if bind == "" {
@@ -51,13 +55,37 @@ func (s *Server) Start(ctx context.Context) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	s.addr = ln.Addr()
+	if s.ready == nil {
+		s.ready = make(chan struct{})
+	}
+	close(s.ready)
 	s.mu.Unlock()
 
 	go func() {
 		<-ctx.Done()
 		_ = s.Stop()
 	}()
-	return s.srv.Serve(ln)
+	if err := s.srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+	return nil
+}
+
+// WaitReady blocks until Start has bound the listener (so URL() works), or
+// ctx is cancelled. Idempotent if called multiple times.
+func (s *Server) WaitReady(ctx context.Context) error {
+	s.mu.Lock()
+	if s.ready == nil {
+		s.ready = make(chan struct{})
+	}
+	ch := s.ready
+	s.mu.Unlock()
+	select {
+	case <-ch:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *Server) Stop() error {
