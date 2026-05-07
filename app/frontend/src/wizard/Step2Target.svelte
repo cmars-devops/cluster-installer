@@ -11,28 +11,36 @@
   type TargetType = 'libvirt' | 'proxmox' | 'esxi';
 
   const target = $derived($wizardStore.inventory.target);
+
   let testing = $state(false);
   let testResult = $state<{ ok: boolean; msg: string } | null>(null);
 
-  // ESXi discovery state — populated by the "연결 + 리소스 가져오기" button.
   let discovery = $state<ESXiDiscovery | null>(null);
-  let manualDS = $state(false);   // toggle: dropdown vs free-text for datastore
-  let manualNet = $state(false);  // …same for network
+  let manualDS = $state(false);
+  let manualNet = $state(false);
 
-  function setType(t: TargetType) {
+  // ── Single immutable updater for the target sub-tree.
+  // Using bind:value to deep store paths in Svelte 5 runes mode mutates in
+  // place and does NOT propagate to derived values. Every input below uses
+  // value={target.x} + oninput → updateTarget instead.
+  function updateTarget(patch: Partial<typeof target>) {
     wizardStore.update((s) => ({
       ...s,
       inventory: {
         ...s.inventory,
-        target: {
-          ...s.inventory.target,
-          type: t,
-          ...(t === 'esxi' && !s.inventory.target.username ? { username: 'root' } : {}),
-          ...(t === 'esxi' && !s.inventory.target.tls_insecure ? { tls_insecure: true } : {}),
-          ...(t === 'esxi' && !s.inventory.target.network ? { network: 'VM Network' } : {})
-        }
+        target: { ...s.inventory.target, ...patch }
       }
     }));
+  }
+
+  function setType(t: TargetType) {
+    const extra: Partial<typeof target> = {};
+    if (t === 'esxi') {
+      if (!target.username)     extra.username = 'root';
+      if (!target.tls_insecure) extra.tls_insecure = true;
+      if (!target.network)      extra.network = 'VM Network';
+    }
+    updateTarget({ type: t, ...extra });
     testResult = null;
     discovery = null;
   }
@@ -51,34 +59,41 @@
   }
 
   async function discoverEsxi() {
+    console.log('[discoverEsxi] click — endpoint:', target.endpoint, 'password set:', !!target.password);
     if (!target.endpoint || !target.password) {
-      discovery = { ok: false, error: 'Endpoint + root password required first.' };
+      discovery = { ok: false, error: '엔드포인트와 root 패스워드 먼저 입력해주세요.' };
       return;
     }
     testing = true;
     discovery = null;
-    discovery = await api.discoverEsxi({
+    const payload = {
       type: 'esxi',
       endpoint: target.endpoint,
       username: target.username || 'root',
       password: target.password,
       ssh_key: target.ssh_key,
       tls_insecure: target.tls_insecure
-    });
+    };
+    console.log('[discoverEsxi] calling api…', payload);
+    let result: ESXiDiscovery;
+    try {
+      result = await api.discoverEsxi(payload);
+      console.log('[discoverEsxi] api returned', result);
+    } catch (e) {
+      console.error('[discoverEsxi] api threw', e);
+      result = { ok: false, error: String(e) };
+    }
+    discovery = result;
     testing = false;
   }
 
-  function pickDatastore(name: string) {
-    wizardStore.update((s) => ({
-      ...s,
-      inventory: { ...s.inventory, target: { ...s.inventory.target, datastore: name } }
-    }));
+  // Helpers for typed input handlers — Svelte 5 doesn't infer the
+  // event.target type automatically inside template expressions.
+  function val(e: Event): string {
+    return (e.target as HTMLInputElement).value;
   }
-  function pickNetwork(name: string) {
-    wizardStore.update((s) => ({
-      ...s,
-      inventory: { ...s.inventory, target: { ...s.inventory.target, network: name } }
-    }));
+  function checked(e: Event): boolean {
+    return (e.target as HTMLInputElement).checked;
   }
 
   const canAdvance = true;
@@ -109,66 +124,74 @@
 {#if target.type === 'libvirt'}
   <Section title={$_('step2.libvirt')}>
     <Field label={$_('step2.endpoint')} hint={$_('step2.endpointHintLibvirt')} required>
-      <input bind:value={$wizardStore.inventory.target.endpoint}
+      <input value={target.endpoint}
+             oninput={(e) => updateTarget({ endpoint: val(e) })}
              placeholder="qemu+ssh://root@kvm1.local/system" />
     </Field>
     <Field label={$_('step2.sshKey')} hint={$_('step2.sshKeyHint')} required>
-      <input bind:value={$wizardStore.inventory.target.ssh_key}
+      <input value={target.ssh_key}
+             oninput={(e) => updateTarget({ ssh_key: val(e) })}
              placeholder="C:\Users\you\.ssh\id_ed25519" />
     </Field>
     <div class="row">
       <Button variant="secondary" disabled={testing || !target.endpoint} onclick={testConnection}>
         {testing ? $_('common.loading') : $_('step2.testConn')}
       </Button>
-      {#if testResult}
-        <Badge tone={testResult.ok ? 'success' : 'danger'}>{testResult.msg}</Badge>
-      {/if}
+      {#if testResult}<Badge tone={testResult.ok ? 'success' : 'danger'}>{testResult.msg}</Badge>{/if}
     </div>
   </Section>
 
 {:else if target.type === 'proxmox'}
   <Section title={$_('step2.proxmox')}>
     <Field label={$_('step2.endpoint')} hint={$_('step2.endpointHintProxmox')} required>
-      <input bind:value={$wizardStore.inventory.target.endpoint}
+      <input value={target.endpoint}
+             oninput={(e) => updateTarget({ endpoint: val(e) })}
              placeholder="https://pve1.example.com:8006/" />
     </Field>
     <Field label={$_('step2.apiToken')} hint={$_('step2.apiTokenHint')} required>
-      <input bind:value={$wizardStore.inventory.target.api_token} type="password" placeholder="root@pam!installer=…" />
+      <input type="password" value={target.api_token}
+             oninput={(e) => updateTarget({ api_token: val(e) })}
+             placeholder="root@pam!installer=…" />
     </Field>
     <label class="checkbox">
-      <input type="checkbox" bind:checked={$wizardStore.inventory.target.tls_insecure} />
+      <input type="checkbox" checked={target.tls_insecure}
+             onchange={(e) => updateTarget({ tls_insecure: checked(e) })} />
       <span>{$_('step2.tlsInsecure')}</span>
     </label>
     <div class="row">
       <Button variant="secondary" disabled={testing || !target.endpoint} onclick={testConnection}>
         {testing ? $_('common.loading') : $_('step2.testConn')}
       </Button>
-      {#if testResult}
-        <Badge tone={testResult.ok ? 'success' : 'danger'}>{testResult.msg}</Badge>
-      {/if}
+      {#if testResult}<Badge tone={testResult.ok ? 'success' : 'danger'}>{testResult.msg}</Badge>{/if}
     </div>
   </Section>
 
 {:else if target.type === 'esxi'}
   <Section title={$_('step2.esxi')}>
     <Field label={$_('step2.endpoint')} hint={$_('step2.endpointHintEsxi')} required>
-      <input bind:value={$wizardStore.inventory.target.endpoint}
+      <input value={target.endpoint}
+             oninput={(e) => updateTarget({ endpoint: val(e) })}
              placeholder="https://192.168.1.210/" />
     </Field>
     <div class="grid-2">
       <Field label={$_('step2.username')} hint={$_('step2.usernameHintEsxi')} required>
-        <input bind:value={$wizardStore.inventory.target.username} placeholder="root" />
+        <input value={target.username}
+               oninput={(e) => updateTarget({ username: val(e) })}
+               placeholder="root" />
       </Field>
       <Field label={$_('step2.rootPassword')} hint={$_('step2.rootPasswordHint')} required>
-        <input bind:value={$wizardStore.inventory.target.password} type="password" />
+        <input type="password" value={target.password}
+               oninput={(e) => updateTarget({ password: val(e) })} />
       </Field>
     </div>
     <Field label={$_('step2.sshKey')} hint={$_('step2.sshKeyHintEsxi')}>
-      <input bind:value={$wizardStore.inventory.target.ssh_key}
+      <input value={target.ssh_key}
+             oninput={(e) => updateTarget({ ssh_key: val(e) })}
              placeholder="(optional) C:\Users\you\.ssh\id_ed25519" />
     </Field>
     <label class="checkbox">
-      <input type="checkbox" bind:checked={$wizardStore.inventory.target.tls_insecure} />
+      <input type="checkbox" checked={target.tls_insecure}
+             onchange={(e) => updateTarget({ tls_insecure: checked(e) })} />
       <span>{$_('step2.tlsInsecureEsxi')}</span>
     </label>
 
@@ -178,9 +201,7 @@
               onclick={discoverEsxi}>
         {testing ? $_('step2.discovering') : $_('step2.discover')}
       </Button>
-      {#if discovery && !discovery.ok}
-        <Badge tone="danger">{discovery.error}</Badge>
-      {/if}
+      {#if discovery && !discovery.ok}<Badge tone="danger">{discovery.error}</Badge>{/if}
     </div>
   </Section>
 
@@ -213,20 +234,22 @@
   {/if}
 
   <Section title="ESXi 리소스 배치">
-    <!-- ── datastore ───────────────────────────────────────── -->
     <Field label={$_('step2.datastore')} hint={discovery?.ok ? '' : $_('step2.datastoreHint')} required>
       {#if discovery?.ok && discovery.datastores && !manualDS}
-        <select bind:value={$wizardStore.inventory.target.datastore}>
+        <select value={target.datastore}
+                onchange={(e) => updateTarget({ datastore: val(e) })}>
           <option value="">— {$_('step2.datastorePicker')} —</option>
           {#each discovery.datastores.filter(d => d.accessible) as ds}
             <option value={ds.name}>
-              {ds.name}  ({ds.type}, {ds.free_gb.toFixed(0)} / {ds.capacity_gb.toFixed(0)} GB {$_('step2.freeOf')})
+              {ds.name}  ({ds.type}, {ds.free_gb.toFixed(0)} / {ds.capacity_gb.toFixed(0)} GB)
             </option>
           {/each}
         </select>
         <button class="link" onclick={() => (manualDS = true)} type="button">{$_('step2.manualEntry')}</button>
       {:else}
-        <input bind:value={$wizardStore.inventory.target.datastore} placeholder="SSD-RAID0-4Ti-02" />
+        <input value={target.datastore}
+               oninput={(e) => updateTarget({ datastore: val(e) })}
+               placeholder="SSD-RAID0-4Ti-02" />
         {#if discovery?.ok}
           <button class="link" onclick={() => (manualDS = false)} type="button">← back to picker</button>
         {/if}
@@ -235,21 +258,24 @@
 
     <Field label={$_('step2.isoDatastore')} hint={$_('step2.isoDatastoreHint')}>
       {#if discovery?.ok && discovery.datastores}
-        <select bind:value={$wizardStore.inventory.target.iso_datastore}>
+        <select value={target.iso_datastore}
+                onchange={(e) => updateTarget({ iso_datastore: val(e) })}>
           <option value="">(blank → same as above)</option>
           {#each discovery.datastores.filter(d => d.accessible) as ds}
             <option value={ds.name}>{ds.name}  ({ds.free_gb.toFixed(0)} GB free)</option>
           {/each}
         </select>
       {:else}
-        <input bind:value={$wizardStore.inventory.target.iso_datastore} placeholder="(blank → same as above)" />
+        <input value={target.iso_datastore}
+               oninput={(e) => updateTarget({ iso_datastore: val(e) })}
+               placeholder="(blank → same as above)" />
       {/if}
     </Field>
 
-    <!-- ── network ─────────────────────────────────────────── -->
     <Field label={$_('step2.network')} hint={discovery?.ok ? '' : $_('step2.networkHint')} required>
       {#if discovery?.ok && discovery.networks && !manualNet}
-        <select bind:value={$wizardStore.inventory.target.network}>
+        <select value={target.network}
+                onchange={(e) => updateTarget({ network: val(e) })}>
           <option value="">— {$_('step2.networkPicker')} —</option>
           {#each discovery.networks as net}
             <option value={net.name}>
@@ -259,7 +285,9 @@
         </select>
         <button class="link" onclick={() => (manualNet = true)} type="button">{$_('step2.manualEntry')}</button>
       {:else}
-        <input bind:value={$wizardStore.inventory.target.network} placeholder="VM Network" />
+        <input value={target.network}
+               oninput={(e) => updateTarget({ network: val(e) })}
+               placeholder="VM Network" />
         {#if discovery?.ok}
           <button class="link" onclick={() => (manualNet = false)} type="button">← back to picker</button>
         {/if}
@@ -279,7 +307,9 @@
 
 <Section title="HTTP server">
   <Field label={$_('step2.advertiseIP')} hint={$_('step2.advertiseIPHint')}>
-    <input bind:value={$wizardStore.inventory.target.advertise_ip} placeholder="(auto)" />
+    <input value={target.advertise_ip}
+           oninput={(e) => updateTarget({ advertise_ip: val(e) })}
+           placeholder="(auto)" />
   </Field>
 </Section>
 
