@@ -28,7 +28,9 @@
     testing = false;
   }
 
-  const canAdvance = $derived(!!target.endpoint);
+  // Always allow Next — endpoint can be filled later. Real connection check
+  // happens during Step 5 (Plan).
+  const canAdvance = true;
 </script>
 
 <header class="step-header">

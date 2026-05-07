@@ -107,7 +107,9 @@ content:
     validating = false;
   }
 
-  const canAdvance = $derived(!!validationResult?.valid);
+  // Allow Next freely. Validate is informational here; the real schema
+  // gate runs in Step 5 right before terraform plan.
+  const canAdvance = true;
   const nameserversText = $derived($wizardStore.inventory.network.nameservers.join(', '));
 </script>
 

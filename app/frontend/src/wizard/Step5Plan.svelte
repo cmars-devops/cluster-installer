@@ -85,7 +85,7 @@
   </div>
 </Section>
 
-<StepNav canAdvance={consented && !!preview} />
+<StepNav canAdvance={consented} />
 
 <style>
   .step-header { margin-bottom: 1.25rem; }

@@ -36,7 +36,9 @@
     wizardStore.update((s) => ({ ...s, mode: m }));
   }
 
-  const canAdvance = $derived(mode === 'new' ? !!fetchedDir : !!$wizardStore.runId);
+  // Always allow Next — content fetch is optional at this stage, the rest of the
+  // wizard works with the in-memory inventory until Step 5 (Plan).
+  const canAdvance = true;
 </script>
 
 <header class="step-header">
