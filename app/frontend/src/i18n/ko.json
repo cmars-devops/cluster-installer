@@ -1,21 +1,182 @@
 {
   "app": {
-    "title": "클러스터 인스톨러"
+    "title": "클러스터 인스톨러",
+    "subtitle": "openSUSE / MicroOS + Ceph + RKE2/K3s 무인 자동 설치"
   },
   "step": {
-    "1": { "short": "프로젝트", "title": "프로젝트 선택" },
-    "2": { "short": "타겟",     "title": "타겟 환경 선택" },
-    "3": { "short": "OS",       "title": "OS 이미지" },
-    "4": { "short": "인벤토리", "title": "노드 인벤토리" },
-    "5": { "short": "Plan",     "title": "변경사항 미리보기" },
-    "6": { "short": "실행",     "title": "설치 진행" },
-    "7": { "short": "결과",     "title": "결과" }
+    "1": { "short": "프로젝트", "title": "프로젝트 선택", "subtitle": "신규 클러스터 생성 또는 진행 중인 작업 재개" },
+    "2": { "short": "타겟",     "title": "타겟 환경 선택", "subtitle": "VM 또는 베어메탈을 호스팅할 인프라" },
+    "3": { "short": "OS",       "title": "OS 이미지 선택", "subtitle": "노드 역할별로 다른 OS를 선택할 수 있습니다" },
+    "4": { "short": "인벤토리", "title": "노드 인벤토리", "subtitle": "클러스터 토폴로지 + 네트워크 + 노드 명세" },
+    "5": { "short": "Plan",     "title": "변경사항 미리보기", "subtitle": "Terraform이 어떤 리소스를 만들지 확인" },
+    "6": { "short": "실행",     "title": "설치 진행", "subtitle": "OS 무인 설치 → Ceph → K8s → CSI → 애드온" },
+    "7": { "short": "결과",     "title": "결과 + 자격 증명", "subtitle": "kubeconfig 다운로드, 대시보드 접속 정보" }
   },
   "common": {
     "next": "다음",
     "back": "이전",
     "cancel": "취소",
     "apply": "적용",
-    "loading": "로딩 중..."
+    "loading": "로딩 중…",
+    "save": "저장",
+    "create": "생성",
+    "delete": "삭제",
+    "add": "추가",
+    "test": "테스트",
+    "copy": "복사",
+    "download": "다운로드",
+    "validate": "검증",
+    "start": "시작"
+  },
+  "step1": {
+    "modeNew": "신규 클러스터 생성",
+    "modeNewDesc": "비어있는 인벤토리부터 시작합니다",
+    "modeResume": "기존 작업 재개",
+    "modeResumeDesc": "%LOCALAPPDATA%\\cluster-installer\\runs 에 저장된 진행 중 런",
+    "contentRepo": "콘텐츠 리포",
+    "contentRepoHint": "Terraform 모듈 + Ansible 플레이북이 들어있는 GitHub 리포",
+    "contentTag": "콘텐츠 태그 (git 태그 또는 브랜치)",
+    "contentTagHint": "예: v0.1.0 또는 main",
+    "fetchContent": "콘텐츠 가져오기",
+    "fetched": "받음 →",
+    "noRuns": "저장된 런이 없습니다. 좌측 '신규 클러스터 생성'으로 시작하세요."
+  },
+  "step2": {
+    "type": "타겟 유형",
+    "libvirt": "libvirt / KVM (SSH 원격)",
+    "libvirtDesc": "리눅스 호스트의 KVM에 SSH로 접속해 VM 생성. 가장 빠른 검증 경로.",
+    "proxmox": "Proxmox VE (REST API)",
+    "proxmoxDesc": "Proxmox 클러스터 API로 VM 생성. 한국 SMB 환경에서 채택률 높음.",
+    "endpoint": "엔드포인트 URI",
+    "endpointHintLibvirt": "예: qemu+ssh://root@kvm1.local/system",
+    "endpointHintProxmox": "예: https://pve1.example.com:8006/",
+    "sshKey": "SSH 개인키 경로",
+    "sshKeyHint": "Windows: %USERPROFILE%\\.ssh\\id_ed25519",
+    "apiToken": "API 토큰 (Proxmox)",
+    "apiTokenHint": "user@pam!tokenid=secret 형식",
+    "tlsInsecure": "TLS 인증서 검증 건너뛰기 (자체 서명 환경에서만)",
+    "testConn": "연결 테스트",
+    "connOk": "연결 성공",
+    "connFailed": "연결 실패",
+    "advertiseIP": "HTTP 서버 광고 IP (자동 감지 권장)",
+    "advertiseIPHint": "VM이 Agama 프로파일을 가져갈 Windows 호스트 IP. 비워두면 자동 선택."
+  },
+  "step3": {
+    "perRoleHint": "역할별로 다른 OS를 선택할 수 있습니다. 일반적으로 Ceph 노드는 Leap, K8s 노드는 MicroOS.",
+    "k8sNodes": "K8s 노드 (control-plane / worker)",
+    "cephNodes": "Ceph 노드 (mon / mgr / osd / rgw)",
+    "image": {
+      "microos": "openSUSE MicroOS",
+      "microosDesc": "Immutable 컨테이너 호스트 OS. 자동 업데이트, transactional-update. K8s 워크로드 추천.",
+      "leap": "openSUSE Leap 16",
+      "leapDesc": "안정 LTS, zypper 즉시 패키지 설치. Ceph OSD/MON 등 패키지 유연성이 필요한 노드 추천.",
+      "tumbleweed": "openSUSE Tumbleweed",
+      "tumbleweedDesc": "롤링 릴리즈, 최신 커널/패키지. 개발/실험용."
+    }
+  },
+  "step4": {
+    "cluster": "클러스터 메타",
+    "clusterName": "클러스터 이름",
+    "clusterNameHint": "소문자/숫자/하이픈, 3–32자",
+    "domain": "도메인",
+    "domainHint": "내부 DNS 존 (예: cluster.local)",
+    "timezone": "타임존",
+    "k8sDistro": "K8s 디스트로",
+    "k8sVersion": "K8s 버전",
+    "cni": "CNI",
+    "network": "네트워크",
+    "podCIDR": "Pod CIDR",
+    "serviceCIDR": "Service CIDR",
+    "vip": "Control-plane VIP",
+    "vipHint": "kube-vip가 ARP로 광고하는 API 서버 VIP",
+    "lbPool": "LoadBalancer IP 범위",
+    "lbPoolHint": "MetalLB가 자동 할당. 예: 10.10.1.41-10.10.1.49",
+    "ingressLBIP": "Ingress 컨트롤러 VIP",
+    "gateway": "기본 게이트웨이",
+    "nameservers": "네임서버 (쉼표 구분)",
+    "nodes": "노드",
+    "addNode": "노드 추가",
+    "node": {
+      "hostname": "호스트네임",
+      "ip": "IP",
+      "clusterIP": "Cluster IP",
+      "clusterIPHint": "Ceph OSD 전용 백엔드 네트워크 IP (선택)",
+      "os": "OS",
+      "roles": "역할",
+      "cpu": "CPU",
+      "ram": "RAM (GB)",
+      "disk": "Disk (GB)",
+      "remove": "삭제"
+    },
+    "role": {
+      "control-plane": "control-plane",
+      "etcd": "etcd",
+      "worker": "worker",
+      "ceph-mon": "ceph-mon",
+      "ceph-mgr": "ceph-mgr",
+      "ceph-osd": "ceph-osd",
+      "ceph-mds": "ceph-mds",
+      "ceph-rgw": "ceph-rgw"
+    },
+    "preview": "YAML 미리보기",
+    "validation": "검증 결과",
+    "validationOk": "✓ 인벤토리가 스키마를 통과했습니다",
+    "validationErr": "검증 실패"
+  },
+  "step5": {
+    "summary": "이 클러스터가 만들어집니다",
+    "summaryNodes": "{count}개 노드",
+    "summaryK8s": "{distro} {version} ({cni} CNI)",
+    "summaryStorage": "Ceph (전용 노드 + ceph-csi)",
+    "previewBtn": "Terraform plan 실행",
+    "noPlan": "(아직 plan을 실행하지 않았습니다)",
+    "consent": "위 내용으로 클러스터를 생성합니다. VM이 만들어지고 OS가 새로 설치됩니다.",
+    "applyBtn": "적용 시작"
+  },
+  "step6": {
+    "stage": "진행 단계",
+    "serverURL": "설치 서버",
+    "serverURLHint": "VM이 Agama 프로파일을 가져갈 URL",
+    "firewallHint": "Windows 방화벽 첫 인바운드 시 허용 대화상자가 뜰 수 있습니다 — '액세스 허용'을 클릭하세요.",
+    "log": "라이브 로그",
+    "stages": {
+      "pending": "대기",
+      "seed_iso": "시드 ISO 생성",
+      "terraform_init": "Terraform init",
+      "terraform_plan": "Terraform plan",
+      "terraform_apply": "VM 생성 + OS 무인 설치",
+      "wait_ssh": "SSH 헬스 대기",
+      "preflight": "노드 사전 준비",
+      "ceph": "Ceph 부트스트랩",
+      "kubernetes": "Kubernetes 설치",
+      "csi": "Ceph CSI 연결",
+      "addons": "Day-2 애드온",
+      "completed": "완료",
+      "failed": "실패"
+    }
+  },
+  "step7": {
+    "kubeconfig": "kubeconfig",
+    "kubeconfigDesc": "kubectl로 클러스터에 접속할 자격 증명",
+    "downloadKubeconfig": "kubeconfig 다운로드",
+    "endpoints": "엔드포인트",
+    "kubeAPI": "Kubernetes API",
+    "cephDashboard": "Ceph 대시보드",
+    "ingress": "Ingress",
+    "argocd": "Argo CD",
+    "credentials": "초기 자격 증명",
+    "cephAdmin": "Ceph 대시보드 admin 비밀번호",
+    "argoAdmin": "Argo CD admin 비밀번호",
+    "nextSteps": "다음 단계",
+    "nextStepsList": [
+      "kubectl get nodes 로 클러스터 상태 확인",
+      "ceph -s 로 스토리지 헬스 확인 (mon 노드에서)",
+      "GitOps 사용 시 Argo CD에 첫 Application 등록"
+    ]
+  },
+  "lang": {
+    "label": "언어",
+    "ko": "한국어",
+    "en": "English"
   }
 }

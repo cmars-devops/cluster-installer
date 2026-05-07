@@ -1,21 +1,182 @@
 {
   "app": {
-    "title": "Cluster Installer"
+    "title": "Cluster Installer",
+    "subtitle": "Unattended openSUSE / MicroOS + Ceph + RKE2/K3s install"
   },
   "step": {
-    "1": { "short": "Project",   "title": "Select project" },
-    "2": { "short": "Target",    "title": "Choose target environment" },
-    "3": { "short": "OS",        "title": "OS image" },
-    "4": { "short": "Inventory", "title": "Node inventory" },
-    "5": { "short": "Plan",      "title": "Preview changes" },
-    "6": { "short": "Run",       "title": "Install" },
-    "7": { "short": "Result",    "title": "Result" }
+    "1": { "short": "Project",   "title": "Select project", "subtitle": "Start a new cluster or resume an in-progress run" },
+    "2": { "short": "Target",    "title": "Choose target environment", "subtitle": "Where the VMs (or bare metal) will be hosted" },
+    "3": { "short": "OS",        "title": "OS image", "subtitle": "Different roles can use different operating systems" },
+    "4": { "short": "Inventory", "title": "Node inventory", "subtitle": "Cluster topology, network, per-node spec" },
+    "5": { "short": "Plan",      "title": "Preview changes", "subtitle": "What Terraform will create" },
+    "6": { "short": "Run",       "title": "Install", "subtitle": "Unattended OS install → Ceph → K8s → CSI → addons" },
+    "7": { "short": "Result",    "title": "Result + credentials", "subtitle": "kubeconfig + dashboard URLs" }
   },
   "common": {
     "next": "Next",
     "back": "Back",
     "cancel": "Cancel",
     "apply": "Apply",
-    "loading": "Loading..."
+    "loading": "Loading…",
+    "save": "Save",
+    "create": "Create",
+    "delete": "Delete",
+    "add": "Add",
+    "test": "Test",
+    "copy": "Copy",
+    "download": "Download",
+    "validate": "Validate",
+    "start": "Start"
+  },
+  "step1": {
+    "modeNew": "New cluster",
+    "modeNewDesc": "Start from a blank inventory",
+    "modeResume": "Resume a run",
+    "modeResumeDesc": "In-progress runs persisted in %LOCALAPPDATA%\\cluster-installer\\runs",
+    "contentRepo": "Content repo",
+    "contentRepoHint": "GitHub repo holding Terraform modules + Ansible playbooks",
+    "contentTag": "Content tag (git tag or branch)",
+    "contentTagHint": "e.g. v0.1.0 or main",
+    "fetchContent": "Fetch content",
+    "fetched": "fetched →",
+    "noRuns": "No saved runs. Start a new cluster on the left."
+  },
+  "step2": {
+    "type": "Target type",
+    "libvirt": "libvirt / KVM (over SSH)",
+    "libvirtDesc": "Connect over SSH to a Linux KVM host. Fastest validation path.",
+    "proxmox": "Proxmox VE (REST API)",
+    "proxmoxDesc": "Use the Proxmox API. Common in Korean SMB deployments.",
+    "endpoint": "Endpoint URI",
+    "endpointHintLibvirt": "e.g. qemu+ssh://root@kvm1.local/system",
+    "endpointHintProxmox": "e.g. https://pve1.example.com:8006/",
+    "sshKey": "SSH private key path",
+    "sshKeyHint": "Windows: %USERPROFILE%\\.ssh\\id_ed25519",
+    "apiToken": "API token (Proxmox)",
+    "apiTokenHint": "user@pam!tokenid=secret",
+    "tlsInsecure": "Skip TLS certificate verification (self-signed labs only)",
+    "testConn": "Test connection",
+    "connOk": "Connected",
+    "connFailed": "Connection failed",
+    "advertiseIP": "HTTP server advertise IP (auto-detect recommended)",
+    "advertiseIPHint": "Windows host IP that target VMs will reach for Agama profiles. Leave blank to auto-pick."
+  },
+  "step3": {
+    "perRoleHint": "Different roles can use different OSs. Typically Ceph nodes run Leap, K8s nodes run MicroOS.",
+    "k8sNodes": "K8s nodes (control-plane / worker)",
+    "cephNodes": "Ceph nodes (mon / mgr / osd / rgw)",
+    "image": {
+      "microos": "openSUSE MicroOS",
+      "microosDesc": "Immutable container host. Auto-updates, transactional-update. Recommended for K8s workloads.",
+      "leap": "openSUSE Leap 16",
+      "leapDesc": "Stable LTS, immediate zypper installs. Recommended for Ceph OSD/MON nodes that need package flexibility.",
+      "tumbleweed": "openSUSE Tumbleweed",
+      "tumbleweedDesc": "Rolling release, latest kernel/packages. Dev/experimentation."
+    }
+  },
+  "step4": {
+    "cluster": "Cluster metadata",
+    "clusterName": "Cluster name",
+    "clusterNameHint": "lowercase letters/digits/hyphens, 3–32 chars",
+    "domain": "Domain",
+    "domainHint": "Internal DNS zone (e.g. cluster.local)",
+    "timezone": "Timezone",
+    "k8sDistro": "K8s distro",
+    "k8sVersion": "K8s version",
+    "cni": "CNI",
+    "network": "Network",
+    "podCIDR": "Pod CIDR",
+    "serviceCIDR": "Service CIDR",
+    "vip": "Control-plane VIP",
+    "vipHint": "API server VIP advertised by kube-vip (ARP)",
+    "lbPool": "LoadBalancer IP range",
+    "lbPoolHint": "Auto-assigned by MetalLB. e.g. 10.10.1.41-10.10.1.49",
+    "ingressLBIP": "Ingress controller VIP",
+    "gateway": "Default gateway",
+    "nameservers": "Nameservers (comma-separated)",
+    "nodes": "Nodes",
+    "addNode": "Add node",
+    "node": {
+      "hostname": "Hostname",
+      "ip": "IP",
+      "clusterIP": "Cluster IP",
+      "clusterIPHint": "Ceph OSD backend network IP (optional)",
+      "os": "OS",
+      "roles": "Roles",
+      "cpu": "CPU",
+      "ram": "RAM (GB)",
+      "disk": "Disk (GB)",
+      "remove": "Remove"
+    },
+    "role": {
+      "control-plane": "control-plane",
+      "etcd": "etcd",
+      "worker": "worker",
+      "ceph-mon": "ceph-mon",
+      "ceph-mgr": "ceph-mgr",
+      "ceph-osd": "ceph-osd",
+      "ceph-mds": "ceph-mds",
+      "ceph-rgw": "ceph-rgw"
+    },
+    "preview": "YAML preview",
+    "validation": "Validation",
+    "validationOk": "✓ Inventory matches schema",
+    "validationErr": "Validation failed"
+  },
+  "step5": {
+    "summary": "About to create",
+    "summaryNodes": "{count} nodes",
+    "summaryK8s": "{distro} {version} ({cni} CNI)",
+    "summaryStorage": "Ceph (dedicated nodes + ceph-csi)",
+    "previewBtn": "Run Terraform plan",
+    "noPlan": "(no plan run yet)",
+    "consent": "Confirms creation. VMs will be created and OSes freshly installed.",
+    "applyBtn": "Apply"
+  },
+  "step6": {
+    "stage": "Stage",
+    "serverURL": "Install server",
+    "serverURLHint": "VMs fetch Agama profiles from this URL",
+    "firewallHint": "Windows Firewall may show an Allow dialog on first inbound — click 'Allow access'.",
+    "log": "Live log",
+    "stages": {
+      "pending": "pending",
+      "seed_iso": "Seed ISO render",
+      "terraform_init": "Terraform init",
+      "terraform_plan": "Terraform plan",
+      "terraform_apply": "VM create + OS install",
+      "wait_ssh": "SSH health wait",
+      "preflight": "Node preflight",
+      "ceph": "Ceph bootstrap",
+      "kubernetes": "Kubernetes install",
+      "csi": "Ceph CSI wire-up",
+      "addons": "Day-2 add-ons",
+      "completed": "completed",
+      "failed": "failed"
+    }
+  },
+  "step7": {
+    "kubeconfig": "kubeconfig",
+    "kubeconfigDesc": "Credentials for kubectl",
+    "downloadKubeconfig": "Download kubeconfig",
+    "endpoints": "Endpoints",
+    "kubeAPI": "Kubernetes API",
+    "cephDashboard": "Ceph dashboard",
+    "ingress": "Ingress",
+    "argocd": "Argo CD",
+    "credentials": "Initial credentials",
+    "cephAdmin": "Ceph dashboard admin password",
+    "argoAdmin": "Argo CD admin password",
+    "nextSteps": "Next steps",
+    "nextStepsList": [
+      "Run kubectl get nodes",
+      "Run ceph -s on a mon node to verify storage health",
+      "Push a first Argo CD Application if you opted into GitOps"
+    ]
+  },
+  "lang": {
+    "label": "Language",
+    "ko": "한국어",
+    "en": "English"
   }
 }

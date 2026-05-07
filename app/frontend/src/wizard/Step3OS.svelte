@@ -1,16 +1,82 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import { gotoStep } from '../stores/wizard';
+  import Section from '../lib/ui/Section.svelte';
+  import StepNav from '../lib/ui/StepNav.svelte';
+  import Badge from '../lib/ui/Badge.svelte';
+  import { wizardStore } from '../stores/wizard';
+
+  type OS = 'microos' | 'leap' | 'tumbleweed';
+
+  let k8sOS = $state<OS>('microos');
+  let cephOS = $state<OS>('leap');
+
+  function chooseImage(role: 'k8s' | 'ceph', os: OS) {
+    if (role === 'k8s') k8sOS = os;
+    else cephOS = os;
+    // Apply default OS to nodes by their roles when they exist (Step 4 will let users override).
+    wizardStore.update((s) => {
+      s.inventory.nodes = s.inventory.nodes.map((n) => {
+        const isCeph = n.roles.some((r) => r.startsWith('ceph-'));
+        const target = isCeph ? cephOS : k8sOS;
+        return { ...n, os: target };
+      });
+      return s;
+    });
+  }
+
+  const images: { id: OS; tag: string; descKey: string }[] = [
+    { id: 'microos',    tag: 'MicroOS',    descKey: 'step3.image.microosDesc' },
+    { id: 'leap',       tag: 'Leap 16',    descKey: 'step3.image.leapDesc' },
+    { id: 'tumbleweed', tag: 'Tumbleweed', descKey: 'step3.image.tumbleweedDesc' }
+  ];
 </script>
 
-<h2>{$_('step.3.title')}</h2>
-<p>OS image catalog will load from <code>content/images.yaml</code> (TODO).</p>
+<header class="step-header">
+  <h2>{$_('step.3.title')}</h2>
+  <p>{$_('step3.perRoleHint')}</p>
+</header>
 
-<div class="row">
-  <button onclick={() => gotoStep(1)}>{$_('common.back')}</button>
-  <button onclick={() => gotoStep(3)}>{$_('common.next')}</button>
-</div>
+<Section title={$_('step3.k8sNodes')}>
+  <div class="image-grid">
+    {#each images as img}
+      <button class="image-card" class:active={k8sOS === img.id} onclick={() => chooseImage('k8s', img.id)}>
+        <div class="head">
+          <strong>{$_('step3.image.' + img.id)}</strong>
+          {#if k8sOS === img.id}<Badge tone="info">{$_('common.apply')}</Badge>{/if}
+        </div>
+        <span>{$_(img.descKey)}</span>
+      </button>
+    {/each}
+  </div>
+</Section>
+
+<Section title={$_('step3.cephNodes')}>
+  <div class="image-grid">
+    {#each images as img}
+      <button class="image-card" class:active={cephOS === img.id} onclick={() => chooseImage('ceph', img.id)}>
+        <div class="head">
+          <strong>{$_('step3.image.' + img.id)}</strong>
+          {#if cephOS === img.id}<Badge tone="info">{$_('common.apply')}</Badge>{/if}
+        </div>
+        <span>{$_(img.descKey)}</span>
+      </button>
+    {/each}
+  </div>
+</Section>
+
+<StepNav canAdvance={true} />
 
 <style>
-  .row { display: flex; gap: 0.5rem; margin-top: 1rem; }
+  .step-header { margin-bottom: 1.25rem; }
+  .step-header h2 { margin: 0; font-size: 1.3rem; }
+  .step-header p { margin: 0.25rem 0 0; color: #a1a1aa; font-size: 0.9rem; }
+  .image-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; }
+  .image-card { display: flex; flex-direction: column; gap: 0.4rem; padding: 0.85rem 1rem;
+                background: #0f0f12; border: 1px solid #2a2a30; border-radius: 6px;
+                color: inherit; cursor: pointer; text-align: left; font-family: inherit; }
+  .image-card:hover { border-color: #52525b; }
+  .image-card.active { border-color: #3b82f6; background: #1e293b; }
+  .image-card strong { font-size: 0.9rem; }
+  .image-card span { font-size: 0.8rem; color: #a1a1aa; line-height: 1.4; }
+  .head { display: flex; justify-content: space-between; align-items: center; }
 </style>
