@@ -243,6 +243,59 @@
     Object.fromEntries(PRESETS.map(p => [p.kind, p.defaultCount])) as Record<PresetKind, number>
   );
 
+  // ── Sample inventory loaders ──────────────────────────────────────────
+  // Single-click "load this entire pattern" — speed up common scenarios
+  // and give new users a working baseline they can edit.
+  function clearAllNodes() {
+    wizardStore.update((s) => ({
+      ...s, inventory: { ...s.inventory, nodes: [] }
+    }));
+    nodeExpanded = {};
+  }
+  function loadSample(kind: 'idc-full' | 'idc-ceph' | 'idc-k3s' | 'lab-min') {
+    if (!confirm('현재 노드 목록을 비우고 샘플로 교체하시겠습니까?')) return;
+    clearAllNodes();
+    if (kind === 'idc-full' || kind === 'idc-ceph') {
+      addPreset('ceph-core', 3);
+      addPreset('ceph-osd',  3);
+      addPreset('ceph-rgw',  2);
+    }
+    if (kind === 'idc-full' || kind === 'idc-k3s') {
+      // K3s uses different IP base; addPreset handles it via ipBase=31.
+      addPreset('rke2-cp',     3);
+      addPreset('rke2-worker', 4);
+    }
+    if (kind === 'lab-min') {
+      addPreset('k3s-single', 1);
+    }
+    if (kind === 'idc-full') {
+      // Combined: also flip topology + auto-fill RGW realm/external Ceph if relevant.
+      wizardStore.update((s) => ({
+        ...s,
+        inventory: {
+          ...s.inventory,
+          cluster: { ...s.inventory.cluster, topology: 'combined' }
+        }
+      }));
+    } else if (kind === 'idc-ceph') {
+      wizardStore.update((s) => ({
+        ...s,
+        inventory: {
+          ...s.inventory,
+          cluster: { ...s.inventory.cluster, topology: 'ceph-only' }
+        }
+      }));
+    } else if (kind === 'idc-k3s' || kind === 'lab-min') {
+      wizardStore.update((s) => ({
+        ...s,
+        inventory: {
+          ...s.inventory,
+          cluster: { ...s.inventory.cluster, topology: 'k8s-only' }
+        }
+      }));
+    }
+  }
+
   // Filter presets by topology so ceph-only mode hides K8s cards, etc.
   const visiblePresets = $derived(PRESETS.filter(p => {
     const isCeph = p.kind.startsWith('ceph-');
@@ -314,6 +367,77 @@
     updateCeph(patch);
   }
 
+  function updateK8s(patch: Partial<typeof $wizardStore.inventory.cluster.kubernetes>) {
+    wizardStore.update((s) => ({
+      ...s,
+      inventory: {
+        ...s.inventory,
+        cluster: {
+          ...s.inventory.cluster,
+          kubernetes: { ...s.inventory.cluster.kubernetes, ...patch }
+        }
+      }
+    }));
+  }
+
+  function generateToken(): string {
+    // 32 bytes hex == 64 chars. RKE2/K3s accept any opaque token; this
+    // matches what their bootstrap scripts auto-generate.
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  // ── External Ceph connection (k8s-only + existing Ceph cluster) ───────
+  function updateExternalCeph(patch: Partial<NonNullable<typeof $wizardStore.inventory.cluster.external_ceph>>) {
+    wizardStore.update((s) => {
+      const cur = s.inventory.cluster.external_ceph ?? {
+        mon_endpoints: [], fsid: '', client_user: 'k8s-rbd', client_key: '', pool: 'rbd-pool'
+      };
+      return {
+        ...s,
+        inventory: {
+          ...s.inventory,
+          cluster: {
+            ...s.inventory.cluster,
+            external_ceph: { ...cur, ...patch }
+          }
+        }
+      };
+    });
+  }
+  function toggleExternalCeph(on: boolean) {
+    wizardStore.update((s) => ({
+      ...s,
+      inventory: {
+        ...s.inventory,
+        cluster: {
+          ...s.inventory.cluster,
+          external_ceph: on
+            ? (s.inventory.cluster.external_ceph ?? {
+                mon_endpoints: [], fsid: '', client_user: 'k8s-rbd', client_key: '', pool: 'rbd-pool'
+              })
+            : undefined
+        }
+      }
+    }));
+  }
+  const useExternalCeph = $derived($wizardStore.inventory.cluster.external_ceph !== undefined);
+  const externalCeph = $derived($wizardStore.inventory.cluster.external_ceph);
+
+  function monsText(): string {
+    return (externalCeph?.mon_endpoints ?? []).join(', ');
+  }
+  function setMons(text: string) {
+    updateExternalCeph({ mon_endpoints: text.split(',').map(s => s.trim()).filter(Boolean) });
+  }
+  function tlsSansText(): string {
+    return ($wizardStore.inventory.cluster.kubernetes.tls_sans ?? []).join(', ');
+  }
+  function setTLSSans(text: string) {
+    updateK8s({ tls_sans: text.split(',').map(s => s.trim()).filter(Boolean) });
+  }
+
   // Toggle the per-node "advanced OSD options" panel. Tracked outside the
   // store because it's purely UI state.
   let advancedOSD = $state<Record<number, boolean>>({});
@@ -344,6 +468,89 @@
     if (n.roles.includes('ceph-osd') && dataDevicesOf(n).length === 0) errs.push('Data devices 누락');
     return errs;
   }
+
+  // ── Cross-node / cross-field validation ───────────────────────────────
+  // Catches issues that aren't visible from any single node row.
+  function ipInRange(ip: string, range: string): boolean {
+    // Quick "10.10.1.41-10.10.1.49" range check. IPs are .NN format only.
+    const m = range.match(/^(\d+\.\d+\.\d+)\.(\d+)-\1\.(\d+)$/);
+    if (!m) return false;
+    const ipM = ip.match(new RegExp(`^${m[1]}\\.(\\d+)$`));
+    if (!ipM) return false;
+    const n = +ipM[1], lo = +m[2], hi = +m[3];
+    return n >= lo && n <= hi;
+  }
+
+  const clusterIssues = $derived.by(() => {
+    const out: { tone: 'danger' | 'warn' | 'info'; msg: string }[] = [];
+    const nodes = $wizardStore.inventory.nodes;
+    const net = $wizardStore.inventory.network;
+
+    // Hostname uniqueness
+    const hostCount = new Map<string, number>();
+    for (const n of nodes) {
+      if (!n.hostname) continue;
+      hostCount.set(n.hostname, (hostCount.get(n.hostname) ?? 0) + 1);
+    }
+    const dupeHosts = [...hostCount.entries()].filter(([, c]) => c > 1).map(([h]) => h);
+    if (dupeHosts.length > 0) {
+      out.push({ tone: 'danger',
+        msg: `중복 hostname: ${dupeHosts.join(', ')} — 각 노드 hostname은 고유해야 합니다.` });
+    }
+
+    // Primary IP uniqueness across nodes
+    const ipCount = new Map<string, number>();
+    for (const n of nodes) {
+      if (!n.ip) continue;
+      ipCount.set(n.ip, (ipCount.get(n.ip) ?? 0) + 1);
+    }
+    const dupeIPs = [...ipCount.entries()].filter(([, c]) => c > 1).map(([h]) => h);
+    if (dupeIPs.length > 0) {
+      out.push({ tone: 'danger',
+        msg: `중복 IP: ${dupeIPs.join(', ')} — 같은 IP를 여러 노드에 할당할 수 없습니다.` });
+    }
+
+    // Cluster-network IP uniqueness (Ceph C-Net)
+    const cipCount = new Map<string, number>();
+    for (const n of nodes) {
+      if (!n.cluster_ip) continue;
+      cipCount.set(n.cluster_ip, (cipCount.get(n.cluster_ip) ?? 0) + 1);
+    }
+    const dupeCIPs = [...cipCount.entries()].filter(([, c]) => c > 1).map(([h]) => h);
+    if (dupeCIPs.length > 0) {
+      out.push({ tone: 'danger',
+        msg: `중복 cluster IP: ${dupeCIPs.join(', ')}` });
+    }
+
+    // VIP must not equal any node IP
+    if (net.vip && nodes.some(n => n.ip === net.vip)) {
+      out.push({ tone: 'danger',
+        msg: `Control-plane VIP (${net.vip})가 노드 IP와 겹칩니다 — kube-vip가 VIP를 띄울 때 충돌.` });
+    }
+
+    // VIP must not fall inside lb_pool
+    if (net.vip && net.lb_pool && ipInRange(net.vip, net.lb_pool)) {
+      out.push({ tone: 'danger',
+        msg: `Control-plane VIP (${net.vip})가 LoadBalancer 풀(${net.lb_pool}) 안에 있음 — MetalLB가 같은 IP를 서비스에 할당할 수 있음.` });
+    }
+
+    // Ingress LB IP must not equal any node IP
+    if (net.ingress_lb_ip && nodes.some(n => n.ip === net.ingress_lb_ip)) {
+      out.push({ tone: 'danger',
+        msg: `Ingress LB IP (${net.ingress_lb_ip})가 노드 IP와 겹칩니다.` });
+    }
+
+    // lb_pool range overlap with node IPs
+    if (net.lb_pool) {
+      const conflictingNodes = nodes.filter(n => n.ip && ipInRange(n.ip, net.lb_pool));
+      if (conflictingNodes.length > 0) {
+        out.push({ tone: 'warn',
+          msg: `LoadBalancer 풀(${net.lb_pool})에 노드 IP가 포함됨: ${conflictingNodes.map(n => n.hostname).join(', ')} — MetalLB가 노드 IP와 충돌하는 서비스 IP를 만들 수 있음.` });
+      }
+    }
+
+    return out;
+  });
 
   // Live YAML preview
   const yamlPreview = $derived.by(() => {
@@ -468,6 +675,113 @@ content:
         </Field>
       </div>
     </Section>
+
+    {#if showK8s}
+      <Section title="Kubernetes 구성"
+               subtitle="클러스터 join 토큰, kube-vip 인터페이스, 추가 TLS SAN.">
+        <div class="grid-2">
+          <Field label="클러스터 join 토큰"
+                 hint="K3s/RKE2 노드가 클러스터에 합류할 때 사용. 비워두면 설치 직전 자동 생성. 기존 토큰을 알면 그대로 입력해 추가 노드 join 가능.">
+            <div class="row-with-btn">
+              <input type="password"
+                     value={$wizardStore.inventory.cluster.kubernetes.token ?? ''}
+                     oninput={(e) => updateK8s({ token: (e.target as HTMLInputElement).value })}
+                     placeholder="(설치 시 자동 생성)" />
+              <Button variant="secondary" onclick={() => updateK8s({ token: generateToken() })}>
+                생성
+              </Button>
+            </div>
+          </Field>
+
+          <Field label="kube-vip 인터페이스"
+                 hint="kube-vip가 control-plane VIP를 ARP로 광고할 NIC 이름. ESXi vmxnet3는 ens192, libvirt virtio는 eth0/enp1s0.">
+            <input value={$wizardStore.inventory.cluster.kubernetes.kube_vip_interface ?? ''}
+                   oninput={(e) => updateK8s({ kube_vip_interface: (e.target as HTMLInputElement).value })}
+                   placeholder="ens192" />
+          </Field>
+        </div>
+
+        <Field label="추가 TLS SAN"
+               hint={`API 서버 인증서에 추가될 SAN (쉼표 구분). VIP(${$wizardStore.inventory.network.vip || 'unset'}) + 노드 IP는 자동 포함되니 외부 DNS 이름만 추가: 예) k8s-prod.triangles.com, api.cluster.local`}>
+          <input value={tlsSansText()}
+                 oninput={(e) => setTLSSans((e.target as HTMLInputElement).value)}
+                 placeholder="k8s-prod.example.com, api.cluster.local" />
+        </Field>
+      </Section>
+
+      {#if topology === 'k8s-only'}
+        <Section title="외부 Ceph 연결 (선택)"
+                 subtitle="기존 Ceph 클러스터에 ceph-csi로 연결. K8s + 별도 운영 Ceph 패턴 (IDC 표준).">
+          <label class="checkbox">
+            <input type="checkbox"
+                   checked={useExternalCeph}
+                   onchange={(e) => toggleExternalCeph((e.target as HTMLInputElement).checked)} />
+            <span>기존 Ceph 클러스터에 연결 (ceph-csi로 RBD/CephFS PVC 사용)</span>
+          </label>
+
+          {#if useExternalCeph && externalCeph}
+            <div class="grid-2">
+              <Field label="MON 엔드포인트"
+                     hint="Ceph mon 데몬 v2 주소들 (쉼표 구분). 보통 :3300 포트. 예: 10.10.1.75:3300, 10.10.1.76:3300, 10.10.1.77:3300"
+                     required>
+                <input value={monsText()}
+                       oninput={(e) => setMons((e.target as HTMLInputElement).value)}
+                       placeholder="10.10.1.75:3300, 10.10.1.76:3300, 10.10.1.77:3300" />
+              </Field>
+
+              <Field label="FSID (Ceph cluster ID)"
+                     hint="기존 Ceph에서 'ceph fsid' 명령어로 확인. UUID 형식."
+                     required>
+                <input value={externalCeph.fsid}
+                       oninput={(e) => updateExternalCeph({ fsid: (e.target as HTMLInputElement).value })}
+                       placeholder="a7f2c4e8-3b1d-4f9a-b2c5-7e8d9a1b3c4f" />
+              </Field>
+
+              <Field label="Pool name"
+                     hint="ceph-csi가 RBD 이미지를 만들 풀. 보통 'rbd-pool' (IDC 기본). 외부 Ceph에 미리 생성돼 있어야 함.">
+                <input value={externalCeph.pool}
+                       oninput={(e) => updateExternalCeph({ pool: (e.target as HTMLInputElement).value })}
+                       placeholder="rbd-pool" />
+              </Field>
+
+              <Field label="Client 사용자명"
+                     hint="좁은 권한의 Ceph client (admin 사용 금지). IDC 표준: k8s-rbd / k8s-cephfs.">
+                <input value={externalCeph.client_user}
+                       oninput={(e) => updateExternalCeph({ client_user: (e.target as HTMLInputElement).value })}
+                       placeholder="k8s-rbd" />
+              </Field>
+            </div>
+
+            <Field label="Client keyring (base64 또는 raw key)"
+                   hint="기존 Ceph에서 'ceph auth get-key client.k8s-rbd' 결과. ceph-csi Secret에 직접 들어감."
+                   required>
+              <input type="password"
+                     value={externalCeph.client_key}
+                     oninput={(e) => updateExternalCeph({ client_key: (e.target as HTMLInputElement).value })}
+                     placeholder="AQDxxx..." />
+            </Field>
+
+            <p class="muted">
+              Apply 단계에서 30-csi-ceph 플레이북이 이 정보로 ceph-csi-rbd Helm 차트를 설치합니다.
+              새 Ceph 부트스트랩은 하지 않습니다.
+            </p>
+          {/if}
+        </Section>
+      {/if}
+    {/if}
+
+    {#if clusterIssues.length > 0}
+      <Section title="검증" subtitle="클러스터 전반에 걸친 충돌·중복 검사">
+        <div class="ceph-hints">
+          {#each clusterIssues as h}
+            <div class="hint-row hint-{h.tone}">
+              <Badge tone={h.tone}>{h.tone === 'danger' ? '필수' : '권장'}</Badge>
+              <span>{h.msg}</span>
+            </div>
+          {/each}
+        </div>
+      </Section>
+    {/if}
 
     {#if showCeph}
       <Section title="Ceph 구성"
@@ -615,6 +929,22 @@ content:
           <button class="link-btn" onclick={expandAllNodes} type="button">전체 펼치기</button>
           <button class="link-btn" onclick={collapseAllNodes} type="button">전체 접기</button>
         {/if}
+      </div>
+
+      <div class="sample-row">
+        <span class="muted">샘플 인벤토리 (한 번에 채우기):</span>
+        <button class="link-btn" onclick={() => loadSample('idc-full')} type="button">
+          IDC 통합 (Ceph 8 + K8s 7)
+        </button>
+        <button class="link-btn" onclick={() => loadSample('idc-ceph')} type="button">
+          IDC Ceph 전용 (8노드)
+        </button>
+        <button class="link-btn" onclick={() => loadSample('idc-k3s')} type="button">
+          IDC K8s 전용 (cp 3 + worker 4)
+        </button>
+        <button class="link-btn" onclick={() => loadSample('lab-min')} type="button">
+          최소 랩 (K3s 단일)
+        </button>
       </div>
 
       <div class="preset-grid">
@@ -940,6 +1270,9 @@ content:
   .empty-hint { padding: 1rem; text-align: center; background: #0f0f12;
                 border: 1px dashed #3f3f46; border-radius: 6px; margin: 0; }
   .presets-head { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.6rem; }
+  .sample-row { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap;
+                margin-bottom: 0.85rem; padding: 0.5rem 0.7rem;
+                background: #0a0a0c; border: 1px dashed #3f3f46; border-radius: 5px; }
   .preset-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
                  gap: 0.6rem; margin-bottom: 1rem; }
   .preset-card { background: #0f0f12; border: 1px solid #2a2a30; border-radius: 6px;
@@ -1016,6 +1349,8 @@ content:
 
   .alloc-hint { display: block; font-size: 0.7rem; color: #fbbf24;
                 font-family: ui-monospace, monospace; margin-top: 0.2rem; }
+  .row-with-btn { display: flex; gap: 0.4rem; align-items: stretch; }
+  .row-with-btn input { flex: 1; }
 
   .osd-defaults-head { font-size: 0.75rem; color: #f59e0b; font-weight: 600;
                        text-transform: uppercase; letter-spacing: 0.05em;

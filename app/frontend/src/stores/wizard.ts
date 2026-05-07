@@ -68,7 +68,22 @@ export interface Inventory {
     domain: string;
     timezone: string;
     topology: Topology;
-    kubernetes: { distro: 'rke2' | 'k3s'; version: string; cni: 'cilium' | 'canal' | 'calico' };
+    kubernetes: {
+      distro: 'rke2' | 'k3s';
+      version: string;
+      cni: 'cilium' | 'canal' | 'calico';
+      /** Cluster join token (k3s/rke2). Generated once per cluster — used
+       *  for adding more servers/agents later. Treat as a secret. */
+      token?: string;
+      /** Network interface name kube-vip ARP-advertises the VIP on. ESXi
+       *  vmxnet3: 'ens192'; libvirt virtio: 'eth0' or 'enp1s0'. Leave
+       *  blank for auto-detect (kube-vip picks first up-interface). */
+      kube_vip_interface?: string;
+      /** Extra TLS SANs for the API server cert (comma-list of DNS names
+       *  / IPs). VIP and node IPs are added automatically; this is for
+       *  external DNS records like 'k8s-prod.triangles.com'. */
+      tls_sans?: string[];
+    };
     external_ceph?: {
       // Used when topology=k8s-only AND user wants ceph-csi to connect to an
       // existing Ceph cluster. Captured in Step 4.
@@ -164,7 +179,14 @@ const defaultInventory: Inventory = {
     domain: 'cluster.local',
     timezone: 'Asia/Seoul',
     topology: 'k8s-only',         // safest default — Ceph adds substantial complexity
-    kubernetes: { distro: 'rke2', version: 'v1.31.4+rke2r1', cni: 'cilium' }
+    kubernetes: {
+      distro: 'rke2',
+      version: 'v1.31.4+rke2r1',
+      cni: 'cilium',
+      token: '',
+      kube_vip_interface: 'ens192',
+      tls_sans: []
+    }
   },
   network: {
     pod_cidr: '10.42.0.0/16',

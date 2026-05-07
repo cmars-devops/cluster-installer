@@ -13,16 +13,43 @@ type Inventory struct {
 }
 
 type ClusterSpec struct {
-	Name       string  `yaml:"name" json:"name"`
-	Domain     string  `yaml:"domain" json:"domain"`
-	Timezone   string  `yaml:"timezone,omitempty" json:"timezone,omitempty"`
-	Kubernetes K8sSpec `yaml:"kubernetes" json:"kubernetes"`
+	Name         string            `yaml:"name" json:"name"`
+	Domain       string            `yaml:"domain" json:"domain"`
+	Timezone     string            `yaml:"timezone,omitempty" json:"timezone,omitempty"`
+	Topology     string            `yaml:"topology,omitempty" json:"topology,omitempty"` // ceph-only | k8s-only | combined
+	Kubernetes   K8sSpec           `yaml:"kubernetes" json:"kubernetes"`
+	ExternalCeph *ExternalCephSpec `yaml:"external_ceph,omitempty" json:"external_ceph,omitempty"`
 }
 
 type K8sSpec struct {
 	Distro  string `yaml:"distro" json:"distro"`   // rke2 | k3s
 	Version string `yaml:"version" json:"version"`
 	CNI     string `yaml:"cni" json:"cni"`
+
+	// Token is the cluster join token. Generated once per cluster — same
+	// token is used by additional servers/agents to join later. Secret.
+	Token string `yaml:"token,omitempty" json:"token,omitempty"`
+
+	// KubeVIPInterface is the NIC kube-vip ARP-advertises the API VIP on.
+	// ESXi vmxnet3: ens192; libvirt virtio: eth0/enp1s0.
+	KubeVIPInterface string `yaml:"kube_vip_interface,omitempty" json:"kube_vip_interface,omitempty"`
+
+	// TLSSANs are extra SANs for the API server cert. VIP and node IPs
+	// are added automatically; this is for external DNS like
+	// "k8s-prod.triangles.com".
+	TLSSANs []string `yaml:"tls_sans,omitempty" json:"tls_sans,omitempty"`
+}
+
+// ExternalCephSpec captures connection info for a pre-existing Ceph
+// cluster the wizard should NOT bootstrap, but should wire ceph-csi
+// against. Used when topology=k8s-only and the operator wants
+// RBD/CephFS PVCs backed by an independently-managed Ceph cluster.
+type ExternalCephSpec struct {
+	MonEndpoints []string `yaml:"mon_endpoints" json:"mon_endpoints"`
+	FSID         string   `yaml:"fsid"          json:"fsid"`
+	ClientUser   string   `yaml:"client_user"   json:"client_user"` // narrow scope user, e.g. "k8s-rbd"
+	ClientKey    string   `yaml:"client_key"    json:"client_key"`  // raw or base64 keyring secret
+	Pool         string   `yaml:"pool"          json:"pool"`        // e.g. "rbd-pool"
 }
 
 type NetworkSpec struct {
