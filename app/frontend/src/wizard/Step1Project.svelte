@@ -5,7 +5,7 @@
   import Button from '../lib/ui/Button.svelte';
   import StepNav from '../lib/ui/StepNav.svelte';
   import Badge from '../lib/ui/Badge.svelte';
-  import { wizardStore } from '../stores/wizard';
+  import { wizardStore, type Topology } from '../stores/wizard';
   import { api } from '../lib/api';
 
   let mode = $state<'new' | 'resume'>($wizardStore.mode);
@@ -13,6 +13,8 @@
   let fetchedDir = $state<string | null>($wizardStore.contentDir);
   let fetchErr = $state('');
   let runs = $state<any[]>([]);
+
+  const topology = $derived($wizardStore.inventory.cluster.topology);
 
   async function loadRuns() {
     try { runs = (await api.listRuns()) as any[]; }
@@ -36,8 +38,17 @@
     wizardStore.update((s) => ({ ...s, mode: m }));
   }
 
-  // Always allow Next — content fetch is optional at this stage, the rest of the
-  // wizard works with the in-memory inventory until Step 5 (Plan).
+  function setTopology(t: Topology) {
+    wizardStore.update((s) => ({
+      ...s,
+      inventory: {
+        ...s.inventory,
+        cluster: { ...s.inventory.cluster, topology: t }
+      }
+    }));
+  }
+
+  // Hint for content fetch (optional in dev mode).
   const canAdvance = true;
 </script>
 
@@ -58,6 +69,53 @@
 </div>
 
 {#if mode === 'new'}
+  <Section title={$_('step1.topology')} subtitle={$_('step1.topologyHint')}>
+    <div class="topo-grid">
+      <button class="topo-card" class:active={topology === 'ceph-only'} onclick={() => setTopology('ceph-only')}>
+        <div class="topo-head">
+          <span class="topo-icon ceph">●</span>
+          <strong>{$_('step1.topologyCeph')}</strong>
+        </div>
+        <span class="topo-desc">{$_('step1.topologyCephDesc')}</span>
+        <div class="topo-roles">
+          <span class="role-pill">ceph-mon</span>
+          <span class="role-pill">ceph-mgr</span>
+          <span class="role-pill">ceph-osd</span>
+          <span class="role-pill">ceph-rgw</span>
+        </div>
+      </button>
+
+      <button class="topo-card" class:active={topology === 'k8s-only'} onclick={() => setTopology('k8s-only')}>
+        <div class="topo-head">
+          <span class="topo-icon k8s">●</span>
+          <strong>{$_('step1.topologyK8s')}</strong>
+        </div>
+        <span class="topo-desc">{$_('step1.topologyK8sDesc')}</span>
+        <div class="topo-roles">
+          <span class="role-pill">control-plane</span>
+          <span class="role-pill">etcd</span>
+          <span class="role-pill">worker</span>
+        </div>
+      </button>
+
+      <button class="topo-card" class:active={topology === 'combined'} onclick={() => setTopology('combined')}>
+        <div class="topo-head">
+          <span class="topo-icon combined">●</span>
+          <strong>{$_('step1.topologyCombined')}</strong>
+          <Badge tone="warn">{$_('step1.topologyAdvanced')}</Badge>
+        </div>
+        <span class="topo-desc">{$_('step1.topologyCombinedDesc')}</span>
+        <div class="topo-roles">
+          <span class="role-pill">control-plane</span>
+          <span class="role-pill">worker</span>
+          <span class="role-pill">ceph-mon</span>
+          <span class="role-pill">ceph-osd</span>
+          <span class="role-pill">…</span>
+        </div>
+      </button>
+    </div>
+  </Section>
+
   <Section title={$_('step1.contentRepo')} subtitle={$_('step1.contentRepoHint')}>
     <Field label={$_('step1.contentRepo')} hint="https://github.com/...">
       <input bind:value={$wizardStore.inventory.content.repo} />
@@ -69,12 +127,8 @@
       <Button variant="primary" disabled={busy} onclick={fetchContent}>
         {busy ? $_('common.loading') : $_('step1.fetchContent')}
       </Button>
-      {#if fetchedDir}
-        <Badge tone="success">{$_('step1.fetched')} {fetchedDir}</Badge>
-      {/if}
-      {#if fetchErr}
-        <Badge tone="danger">{fetchErr}</Badge>
-      {/if}
+      {#if fetchedDir}<Badge tone="success">{$_('step1.fetched')} {fetchedDir}</Badge>{/if}
+      {#if fetchErr}<Badge tone="danger">{fetchErr}</Badge>{/if}
     </div>
   </Section>
 {:else}
@@ -121,6 +175,29 @@
   .mode-card.active { border-color: #3b82f6; background: #1e293b; }
   .mode-card strong { font-size: 0.95rem; }
   .mode-card span { font-size: 0.8rem; color: #a1a1aa; }
+
+  .topo-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; }
+  @media (max-width: 1100px) { .topo-grid { grid-template-columns: 1fr; } }
+  .topo-card { display: flex; flex-direction: column; gap: 0.6rem;
+               padding: 1rem; border-radius: 6px; cursor: pointer;
+               background: #0f0f12; border: 1px solid #2a2a30;
+               color: inherit; text-align: left; font-family: inherit;
+               transition: border-color 0.1s; }
+  .topo-card:hover { border-color: #52525b; }
+  .topo-card.active { border-color: #3b82f6; background: #1e293b; }
+  .topo-head { display: flex; align-items: center; gap: 0.5rem; }
+  .topo-icon { font-size: 1.1rem; line-height: 1; }
+  .topo-icon.ceph     { color: #f59e0b; }
+  .topo-icon.k8s      { color: #3b82f6; }
+  .topo-icon.combined { color: #a855f7; }
+  .topo-card strong { font-size: 0.92rem; flex: 1; }
+  .topo-desc { font-size: 0.78rem; color: #a1a1aa; line-height: 1.5; }
+  .topo-roles { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.25rem; }
+  .role-pill { display: inline-block; padding: 0.1rem 0.45rem; border-radius: 999px;
+               background: #27272a; border: 1px solid #3f3f46;
+               color: #a1a1aa; font-size: 0.7rem; font-family: ui-monospace, monospace; }
+  .topo-card.active .role-pill { border-color: #3b82f6; color: #93c5fd; }
+
   .row { display: flex; gap: 0.75rem; align-items: center; }
   .muted { color: #71717a; font-size: 0.85rem; }
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }

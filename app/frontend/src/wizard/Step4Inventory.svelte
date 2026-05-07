@@ -8,10 +8,15 @@
   import { wizardStore, addNode, removeNode, updateNode, type Role, type NodeSpec } from '../stores/wizard';
   import { api } from '../lib/api';
 
-  const allRoles: Role[] = [
-    'control-plane', 'etcd', 'worker',
-    'ceph-mon', 'ceph-mgr', 'ceph-osd', 'ceph-mds', 'ceph-rgw'
-  ];
+  const k8sRoles: Role[]  = ['control-plane', 'etcd', 'worker'];
+  const cephRoles: Role[] = ['ceph-mon', 'ceph-mgr', 'ceph-osd', 'ceph-mds', 'ceph-rgw'];
+
+  const topology = $derived($wizardStore.inventory.cluster.topology);
+  const visibleRoles = $derived(
+    topology === 'ceph-only' ? cephRoles
+    : topology === 'k8s-only' ? k8sRoles
+    : [...k8sRoles, ...cephRoles]
+  );
 
   let validationResult = $state<{ valid: boolean; errors: string[] } | null>(null);
   let validating = $state(false);
@@ -176,9 +181,13 @@ content:
              subtitle={$wizardStore.inventory.nodes.length + ' nodes'}>
       <div class="presets">
         <span class="muted">Presets:</span>
-        <Button onclick={() => addPreset('k3s-1')}>+ K3s 단일 노드</Button>
-        <Button onclick={() => addPreset('rke2-3')}>+ RKE2 control-plane × 3</Button>
-        <Button onclick={() => addPreset('ceph-3')}>+ Ceph OSD × 3</Button>
+        {#if topology !== 'ceph-only'}
+          <Button onclick={() => addPreset('k3s-1')}>+ K3s 단일 노드</Button>
+          <Button onclick={() => addPreset('rke2-3')}>+ RKE2 control-plane × 3</Button>
+        {/if}
+        {#if topology !== 'k8s-only'}
+          <Button onclick={() => addPreset('ceph-3')}>+ Ceph OSD × 3</Button>
+        {/if}
       </div>
 
       {#each $wizardStore.inventory.nodes as node, i}
@@ -222,7 +231,7 @@ content:
           </div>
           <Field label={$_('step4.node.roles')}>
             <div class="roles">
-              {#each allRoles as r}
+              {#each visibleRoles as r}
                 <label class="role-chip" class:active={node.roles.includes(r)}>
                   <input type="checkbox"
                          checked={node.roles.includes(r)}

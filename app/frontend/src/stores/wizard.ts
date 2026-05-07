@@ -16,12 +16,24 @@ export interface NodeSpec {
   storage_devices?: string[];
 }
 
+export type Topology = 'ceph-only' | 'k8s-only' | 'combined';
+
 export interface Inventory {
   cluster: {
     name: string;
     domain: string;
     timezone: string;
+    topology: Topology;
     kubernetes: { distro: 'rke2' | 'k3s'; version: string; cni: 'cilium' | 'canal' | 'calico' };
+    external_ceph?: {
+      // Used when topology=k8s-only AND user wants ceph-csi to connect to an
+      // existing Ceph cluster. Captured in Step 4.
+      mon_endpoints: string[];
+      fsid: string;
+      client_user: string;       // typically "k8s-rbd"
+      client_key: string;        // base64-encoded keyring secret
+      pool: string;              // typically "rbd-pool"
+    };
   };
   network: {
     pod_cidr: string;
@@ -68,6 +80,7 @@ const defaultInventory: Inventory = {
     name: 'demo-cluster',
     domain: 'cluster.local',
     timezone: 'Asia/Seoul',
+    topology: 'k8s-only',         // safest default — Ceph adds substantial complexity
     kubernetes: { distro: 'rke2', version: 'v1.31.4+rke2r1', cni: 'cilium' }
   },
   network: {

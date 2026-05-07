@@ -10,6 +10,10 @@
   let k8sOS = $state<OS>('microos');
   let cephOS = $state<OS>('leap');
 
+  const topology = $derived($wizardStore.inventory.cluster.topology);
+  const showK8s  = $derived(topology === 'k8s-only'  || topology === 'combined');
+  const showCeph = $derived(topology === 'ceph-only' || topology === 'combined');
+
   function chooseImage(role: 'k8s' | 'ceph', os: OS) {
     if (role === 'k8s') k8sOS = os;
     else cephOS = os;
@@ -38,33 +42,37 @@
   <p>{$_('step3.perRoleHint')}</p>
 </header>
 
-<Section title={$_('step3.k8sNodes')}>
-  <div class="image-grid">
-    {#each images as img}
-      <button class="image-card" class:active={k8sOS === img.id} onclick={() => chooseImage('k8s', img.id)}>
-        <div class="head">
-          <strong>{$_('step3.image.' + img.id)}</strong>
-          {#if k8sOS === img.id}<Badge tone="info">{$_('common.apply')}</Badge>{/if}
-        </div>
-        <span>{$_(img.descKey)}</span>
-      </button>
-    {/each}
-  </div>
-</Section>
+{#if showK8s}
+  <Section title={$_('step3.k8sNodes')}>
+    <div class="image-grid">
+      {#each images as img}
+        <button class="image-card" class:active={k8sOS === img.id} onclick={() => chooseImage('k8s', img.id)}>
+          <div class="head">
+            <strong>{$_('step3.image.' + img.id)}</strong>
+            {#if k8sOS === img.id}<Badge tone="info">{$_('common.apply')}</Badge>{/if}
+          </div>
+          <span>{$_(img.descKey)}</span>
+        </button>
+      {/each}
+    </div>
+  </Section>
+{/if}
 
-<Section title={$_('step3.cephNodes')}>
-  <div class="image-grid">
-    {#each images as img}
-      <button class="image-card" class:active={cephOS === img.id} onclick={() => chooseImage('ceph', img.id)}>
-        <div class="head">
-          <strong>{$_('step3.image.' + img.id)}</strong>
-          {#if cephOS === img.id}<Badge tone="info">{$_('common.apply')}</Badge>{/if}
-        </div>
-        <span>{$_(img.descKey)}</span>
-      </button>
-    {/each}
-  </div>
-</Section>
+{#if showCeph}
+  <Section title={$_('step3.cephNodes')}>
+    <div class="image-grid">
+      {#each images as img}
+        <button class="image-card" class:active={cephOS === img.id} onclick={() => chooseImage('ceph', img.id)}>
+          <div class="head">
+            <strong>{$_('step3.image.' + img.id)}</strong>
+            {#if cephOS === img.id}<Badge tone="info">{$_('common.apply')}</Badge>{/if}
+          </div>
+          <span>{$_(img.descKey)}</span>
+        </button>
+      {/each}
+    </div>
+  </Section>
+{/if}
 
 <StepNav canAdvance={true} />
 
