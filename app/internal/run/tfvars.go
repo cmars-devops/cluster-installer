@@ -47,6 +47,26 @@ type proxmoxNodeVar struct {
 	Discard      bool   `json:"discard,omitempty"`      // SSD TRIM passthrough — set when format=qcow2
 }
 
+// esxiNodeVar matches content/terraform/stacks/esxi/main.tf > variable "nodes".
+//
+// SeedISOPath / BaseISOPath are datastore-relative (the orchestrator uploads
+// the bytes to ISODatastore via govmomi pre-TF; the path here is what
+// vSphere consumes in vsphere_virtual_machine.cdrom.path).
+type esxiNodeVar struct {
+	Name             string `json:"name"`
+	MemoryMB         int    `json:"memory_mb"`
+	VCPU             int    `json:"vcpu"`
+	DiskGB           int    `json:"disk_gb"`
+	ExtraDisksGB     []int  `json:"extra_disks_gb"`
+	SeedISOPath      string `json:"seed_iso_path"`
+	BaseISOPath      string `json:"base_iso_path,omitempty"`
+	MAC              string `json:"mac,omitempty"`
+	Datastore        string `json:"datastore,omitempty"`      // per-node disk datastore override
+	ISODatastore     string `json:"iso_datastore,omitempty"`  // per-node ISO datastore override
+	DiskProvisioning string `json:"disk_provisioning,omitempty"`
+	GuestID          string `json:"guest_id,omitempty"`
+}
+
 // renderTFVars writes runs/<id>/terraform/tfvars.json. Returns the path.
 func (o *Orchestrator) renderTFVars() (string, error) {
 	dir := filepath.Join(o.runDir(), "terraform")
@@ -61,13 +81,7 @@ func (o *Orchestrator) renderTFVars() (string, error) {
 	case "proxmox":
 		return out, o.writeProxmoxTFVars(out)
 	case "esxi":
-		// ESXi backend (govmomi) is a v2 milestone. The inventory is
-		// captured + saved, but Apply will not run terraform yet — the
-		// orchestrator returns a friendly error here pointing at the docs.
-		return "", fmt.Errorf(
-			"ESXi target captured but not yet supported by the run engine — " +
-				"see docs/phase-1-open-items.md §3 for the implementation plan " +
-				"(govmomi adapter + per-cluster ISO remaster)")
+		return out, o.writeESXiTFVars(out)
 	default:
 		return "", fmt.Errorf("unknown target type %q", o.Inventory.Target.Type)
 	}
@@ -169,6 +183,91 @@ func (o *Orchestrator) writeProxmoxTFVars(path string) error {
 		"nodes":         nodes,
 	}
 	return writeJSON(path, doc)
+}
+
+// writeESXiTFVars renders tfvars.json for content/terraform/stacks/esxi.
+//
+// Unlike libvirt/Proxmox, ESXi has no in-place equivalent of the
+// orchestrator's HTTP server: the vSphere CD-ROM backing must point at a
+// file already on the datastore. The orchestrator's pre-TF stage uploads
+// every node's seed ISO to a stable path under
+// "[iso_datastore] cluster-installer/<run-id>/seed-<host>.iso"; this
+// function only references that path — not the bytes.
+//
+// MicroOS today is fully supported (Combustion seed ISO does the work).
+// Leap/Tumbleweed on ESXi requires Agama-aware ISO remaster (phase-1 §4)
+// which is not yet implemented; the orchestrator gates that case
+// upstream with a clear error rather than producing a tfvars.json that
+// would silently boot Leap into the standard installer's manual flow.
+func (o *Orchestrator) writeESXiTFVars(path string) error {
+	dsRunRoot := esxiDatastoreRunRoot(o.Run.ID)
+	nodes := make([]esxiNodeVar, 0, len(o.Inventory.Nodes))
+	for _, n := range o.Inventory.Nodes {
+		nv := esxiNodeVar{
+			Name:             n.Hostname,
+			MemoryMB:         defaultInt(n.MemoryGB*1024, 4096),
+			VCPU:             defaultInt(n.CPU, 2),
+			DiskGB:           defaultInt(n.DiskGB, 40),
+			ExtraDisksGB:     extraDisksFor(n, o.Inventory.Ceph),
+			SeedISOPath:      dsRunRoot + "seed-" + n.Hostname + ".iso",
+			MAC:              n.PrimaryMAC,
+			Datastore:        n.Datastore, // per-node placement override
+			DiskProvisioning: defaultStr(n.DiskProvisioning, "thin"),
+			GuestID:          esxiGuestIDFor(n.OS),
+		}
+		nodes = append(nodes, nv)
+	}
+
+	doc := map[string]any{
+		"vsphere_server":   esxiServerFromEndpoint(o.Inventory.Target.Endpoint),
+		"vsphere_user":     defaultStr(o.Inventory.Target.Username, "root"),
+		"vsphere_password": o.Inventory.Target.Password,
+		"tls_insecure":     o.Inventory.Target.TLSInsecure,
+		"datastore":        o.Inventory.Target.Datastore,
+		"iso_datastore":    defaultStr(o.Inventory.Target.ISODatastore, o.Inventory.Target.Datastore),
+		"network":          defaultStr(o.Inventory.Target.Network, "VM Network"),
+		"nodes":            nodes,
+	}
+	return writeJSON(path, doc)
+}
+
+// esxiDatastoreRunRoot is the per-run directory uploaded ISOs land in,
+// expressed as a datastore-relative prefix (NO leading slash, trailing
+// slash included). Used by both the orchestrator's pre-TF upload and
+// the tfvars renderer so they agree on the path.
+func esxiDatastoreRunRoot(runID string) string {
+	return "cluster-installer/" + runID + "/"
+}
+
+// esxiGuestIDFor maps the inventory OS to vSphere's guest_id enum. Using
+// 'opensuse64Guest' (instead of 'otherLinux64Guest') is what enables
+// vmxnet3 paravirt + ballooning hints — issue #4 in lessons-from-IDC.md.
+func esxiGuestIDFor(os string) string {
+	switch os {
+	case "microos", "leap", "tumbleweed":
+		return "opensuse64Guest"
+	default:
+		return "otherLinux64Guest"
+	}
+}
+
+// esxiServerFromEndpoint strips the URL framing the wizard accepts in
+// the human-friendly form ("https://192.168.1.210/") down to the bare
+// host the vsphere provider expects ("192.168.1.210").
+func esxiServerFromEndpoint(endpoint string) string {
+	s := endpoint
+	for _, prefix := range []string{"https://", "http://"} {
+		if len(s) >= len(prefix) && s[:len(prefix)] == prefix {
+			s = s[len(prefix):]
+			break
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] == '/' {
+			return s[:i]
+		}
+	}
+	return s
 }
 
 // ---- helpers ----------------------------------------------------------

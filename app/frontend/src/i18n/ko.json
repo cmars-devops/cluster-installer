@@ -184,6 +184,7 @@
     "stages": {
       "pending": "대기",
       "seed_iso": "시드 ISO 생성",
+      "datastore_upload": "데이터스토어 업로드",
       "terraform_init": "Terraform init",
       "terraform_plan": "Terraform plan",
       "terraform_apply": "VM 생성 + OS 무인 설치",

@@ -184,6 +184,7 @@
     "stages": {
       "pending": "pending",
       "seed_iso": "Seed ISO render",
+      "datastore_upload": "Datastore upload",
       "terraform_init": "Terraform init",
       "terraform_plan": "Terraform plan",
       "terraform_apply": "VM create + OS install",

@@ -23,6 +23,7 @@ type Stage string
 const (
 	StagePending     Stage = "pending"
 	StageSeedISO     Stage = "seed_iso"
+	StageDSUpload    Stage = "datastore_upload" // ESXi-only: push seed ISOs to vSphere datastore
 	StageTFInit      Stage = "terraform_init"
 	StageTFPlan      Stage = "terraform_plan"
 	StageTFApply     Stage = "terraform_apply"

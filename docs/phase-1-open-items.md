@@ -62,38 +62,42 @@ A future iteration will:
 Tracked but non-blocking — Agama (Leap/Tumbleweed) clusters work today
 without any manual upload, which covers the most common install path.
 
-## 3. ESXi target backend (govmomi adapter)
+## 3. ESXi target backend — MicroOS path done
 
-The wizard captures ESXi targets — Step 2 has a three-card layout
-(libvirt / Proxmox / ESXi) with ESXi-specific fields: vSphere endpoint
-(`https://192.168.1.210/`), root username + password (shared by SOAP
-API and SSH per ESXi convention), optional SSH private key, datastore
-for VM disks + seed ISOs, optional separate ISO-upload datastore, port
-group name, and `tls_insecure` defaulting to true (ESXi labs are
-self-signed). The schema validates these through to `target.type=esxi`,
-and `state.Run` persists them to `runs/<id>/run.json`.
+What landed in v1.x:
 
-What's missing for execution:
+- **govmomi-backed Discover** — `internal/runner/esxi/discover.go` now
+  logs in via `govmomi.NewClient`, reads host info + datastores
+  (capacity / free / type / accessible) + networks (with VLAN
+  extracted from common naming conventions like
+  `Storage-Net (VLAN100)`). Single bound 20-second login per click.
+- **Datastore upload helper** — `internal/runner/esxi/upload.go`
+  exposes `Client.UploadFile(ctx, datastore, dsRel, localPath, emit)`
+  using `Datastore.Upload` (the SOAP-attached `/folder` PUT). Progress
+  via `progress.Sinker` re-emitted as 2-second `run:line` events.
+  `MakeDirectory(parents=true)` for intermediate dirs, idempotent
+  against `FileAlreadyExists`.
+- **ESXi terraform stack** —
+  `content/terraform/stacks/esxi/main.tf` + `modules/esxi-vm/main.tf`
+  using `hashicorp/vsphere`. Boot order `[cdrom, disk]` (lessons #6),
+  `opensuse64Guest` default for vmxnet3 paravirt (lessons #4),
+  thin/thick/thick-eager → `thin / lazy / eagerZeroedThick`.
+- **Orchestrator stage `datastore_upload`** — runs only when
+  `target.type=esxi`, between seed render and TF init. Skipped (with
+  strikethrough in Step 6) for libvirt/proxmox. Uploads each node's
+  Combustion seed ISO to
+  `[iso_datastore] cluster-installer/<run-id>/seed-<host>.iso`.
 
-- **govmomi-based Terraform module.** The reference IDC repo uses
-  raw `curl` against the ESXi SOAP API for VM lifecycle. Our v1.x
-  shape: a small Go package `internal/runner/esxi/` wrapping the
-  vmware/govmomi SDK to (a) upload ISOs to a datastore via the
-  HTTP `/folder` endpoint, (b) create VMs via `CreateVM_Task` with
-  `guestId=opensuse64Guest` (the IDC lessons document this — using
-  `otherLinux64Guest` skips VMware-specific NIC optimizations), (c)
-  set boot order with explicit `deviceKey=4000` for NIC + `2000` for
-  disk (issue #6 in lessons-from-IDC.md), (d) `PowerOnVM_Task` then
-  poll status (issue #8 — async, can't poll immediately).
-- **Agama profile delivery.** Same constraint as Proxmox: ESXi VMs
-  can't take a kernel cmdline directly through the SOAP API in any
-  clean way. Either ship a remastered netinstall ISO with
-  `inst.auto=http://HOST/profiles/by-mac/${net_default_mac}.json`
-  baked into grub.cfg, or let Combustion/MicroOS handle the seed
-  drive (already works for that flow).
-- **MAC pre-allocation** (item 4 below) is doubly important on ESXi
-  because the VM's MAC isn't known until after `CreateVM_Task` returns,
-  and we need it pre-render to bind the NM connection.
+**What's still gated** — Leap/Tumbleweed on ESXi. The orchestrator
+returns a clear error at the upload stage if the inventory has any
+Leap/Tumbleweed node, because Agama profile delivery on vSphere needs
+ISO remaster (see §4 below) — direct kernel boot isn't available via
+the vsphere provider. **MicroOS clusters work end-to-end.**
+
+MAC pre-allocation (originally listed alongside ESXi) was already
+closed by §5 — the deterministic-from-cluster-name MAC lands in the
+inventory before `vsphere_virtual_machine` runs, so `use_static_mac`
+binds correctly without a two-pass dance.
 
 ## 4. Proxmox + Agama path
 
@@ -182,6 +186,10 @@ the Wails app context.
   cancelled by user"`. Step 6 has a `danger`-variant Cancel button while
   a run is mid-flight (guarded by `confirm()`). Half-created VMs are
   intentionally NOT destroyed on cancel — that's a separate user action.
+- **ESXi MicroOS happy path** (closes §3 for MicroOS) — see §3 above for
+  the breakdown. govmomi adapter, datastore upload stage, vsphere
+  terraform stack, all wired. Leap/Tumbleweed on ESXi remains gated
+  pending §4 (Agama ISO remaster).
 - **libvirt base volume — kernel-boot path** (partially closes §2) —
   `libvirt-vm` and the libvirt stack now both accept an empty
   `base_volume_id`, threading per-node values through. tfvars renders

@@ -119,12 +119,24 @@ func (o *Orchestrator) pipelineStages() []stage {
 
 	common := []stage{
 		{state.StageSeedISO, o.startHTTPAndRenderSeeds},
-		{state.StageTFInit, o.terraformInit},
-		{state.StageTFPlan, o.terraformPlan},
-		{state.StageTFApply, o.terraformApply},
-		{state.StageWaitSSH, o.waitSSH},
-		{state.StagePreflight, func(c context.Context) error { return o.runPlaybook(c, "playbooks/00-preflight.yml") }},
 	}
+	// ESXi has no equivalent of libvirt's "let qemu read /tmp/seed-foo.iso"
+	// — every CD-ROM backing must already be on a vSphere datastore. So
+	// we slot in an ESXi-only upload stage between seed render and TF
+	// init. Other targets get a strikethrough on that pill so users see
+	// it's intentionally bypassed instead of stuck.
+	if o.Inventory.Target.Type == "esxi" {
+		common = append(common, stage{state.StageDSUpload, o.uploadSeedsToDatastore})
+	} else {
+		o.skip(state.StageDSUpload, "target!=esxi")
+	}
+	common = append(common,
+		stage{state.StageTFInit, o.terraformInit},
+		stage{state.StageTFPlan, o.terraformPlan},
+		stage{state.StageTFApply, o.terraformApply},
+		stage{state.StageWaitSSH, o.waitSSH},
+		stage{state.StagePreflight, func(c context.Context) error { return o.runPlaybook(c, "playbooks/00-preflight.yml") }},
+	)
 
 	cephStage := stage{state.StageCeph, func(c context.Context) error { return o.runPlaybook(c, "playbooks/10-ceph-cephadm.yml") }}
 	k8sStage := stage{state.StageK8s, o.runK8sPlaybook}

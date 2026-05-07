@@ -9,7 +9,7 @@
   import { onMount } from 'svelte';
 
   const stages = [
-    'pending', 'seed_iso',
+    'pending', 'seed_iso', 'datastore_upload',
     'terraform_init', 'terraform_plan', 'terraform_apply',
     'wait_ssh', 'preflight', 'ceph', 'kubernetes', 'csi', 'addons',
     'completed'
