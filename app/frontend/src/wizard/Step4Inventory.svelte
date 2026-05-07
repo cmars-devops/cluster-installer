@@ -12,6 +12,8 @@
   const cephRoles: Role[] = ['ceph-mon', 'ceph-mgr', 'ceph-osd', 'ceph-mds', 'ceph-rgw'];
 
   const topology = $derived($wizardStore.inventory.cluster.topology);
+  const showK8s   = $derived(topology === 'k8s-only'  || topology === 'combined');
+  const showCeph  = $derived(topology === 'ceph-only' || topology === 'combined');
   const visibleRoles = $derived(
     topology === 'ceph-only' ? cephRoles
     : topology === 'k8s-only' ? k8sRoles
@@ -20,6 +22,45 @@
 
   let validationResult = $state<{ valid: boolean; errors: string[] } | null>(null);
   let validating = $state(false);
+
+  // ── Ceph-specific updaters ────────────────────────────────────────────
+  function updateCeph(patch: Partial<typeof $wizardStore.inventory.ceph>) {
+    wizardStore.update((s) => ({
+      ...s,
+      inventory: { ...s.inventory, ceph: { ...s.inventory.ceph, ...patch } }
+    }));
+  }
+  function togglePool(pool: 'rbd' | 'cephfs' | 'rgw', on: boolean) {
+    const cur = $wizardStore.inventory.ceph.pools;
+    const next = on ? Array.from(new Set([...cur, pool])) : cur.filter(p => p !== pool);
+    updateCeph({ pools: next });
+  }
+
+  // ── Computed Ceph health hints (live) ─────────────────────────────────
+  const monCount = $derived($wizardStore.inventory.nodes.filter(n => n.roles.includes('ceph-mon')).length);
+  const osdNodes = $derived($wizardStore.inventory.nodes.filter(n => n.roles.includes('ceph-osd')));
+  const osdNodesWithoutDevices = $derived(osdNodes.filter(n => !n.storage_devices || n.storage_devices.length === 0));
+  const cephHints = $derived.by(() => {
+    if (!showCeph) return [];
+    const out: { tone: 'warn' | 'danger' | 'info'; msg: string }[] = [];
+    if (monCount === 0) {
+      out.push({ tone: 'danger', msg: `Mon 노드가 없습니다. quorum을 위해 최소 1개(권장 3개) 필요합니다.` });
+    } else if (monCount % 2 === 0) {
+      out.push({ tone: 'warn', msg: `Mon 노드 ${monCount}개 — 짝수는 split-brain 위험. 1개 추가하거나 제거해서 홀수로 맞추세요.` });
+    } else if (monCount === 1) {
+      out.push({ tone: 'warn', msg: `Mon 노드 1개 — 단일 장애점입니다. 운영 환경은 3개 권장.` });
+    }
+    if (osdNodes.length === 0) {
+      out.push({ tone: 'danger', msg: `OSD 노드가 없습니다. 데이터 저장 불가. 최소 3개 권장 (replica 3 시).` });
+    } else if (osdNodes.length < 3) {
+      out.push({ tone: 'warn', msg: `OSD 노드 ${osdNodes.length}개 — 기본 replica 3에 미달. 풀 size를 ${osdNodes.length}로 낮추거나 노드 추가.` });
+    }
+    if (osdNodesWithoutDevices.length > 0) {
+      out.push({ tone: 'danger',
+        msg: `OSD 노드 ${osdNodesWithoutDevices.length}개에 storage_devices 미설정 — cephadm이 디스크를 찾지 못합니다. 각 OSD 행의 'Storage devices' 필드에 /dev/sdb 형식으로 입력.` });
+    }
+    return out;
+  });
 
   function nameserversInput(value: string) {
     wizardStore.update((s) => {
@@ -34,27 +75,53 @@
     updateNode(idx, { roles: next });
   }
 
-  function addPreset(preset: 'k3s-1' | 'rke2-3' | 'ceph-3') {
+  function addPreset(preset: 'k3s-1' | 'rke2-3' | 'ceph-core-3' | 'ceph-osd-3' | 'ceph-rgw-2') {
     if (preset === 'k3s-1') {
-      addNode({ hostname: 'k3s-server-01', ip: '10.10.1.31', roles: ['control-plane', 'etcd', 'worker'], os: 'microos' });
+      addNode({ hostname: 'k3s-server-01', ip: '10.10.1.31',
+                roles: ['control-plane', 'etcd', 'worker'], os: 'microos' });
     }
     if (preset === 'rke2-3') {
       const base = 31;
       ['cp1', 'cp2', 'cp3'].forEach((h, i) => addNode({
-        hostname: h, ip: `10.10.1.${base + i}`, roles: ['control-plane', 'etcd'], os: 'microos',
-        cpu: 4, memory_gb: 8, disk_gb: 60
+        hostname: h, ip: `10.10.1.${base + i}`, roles: ['control-plane', 'etcd'],
+        os: 'microos', cpu: 4, memory_gb: 8, disk_gb: 60
       }));
     }
-    if (preset === 'ceph-3') {
+    // ── Ceph presets — IDC-validated layout (mon×3 + osd×N + rgw×2) ──
+    if (preset === 'ceph-core-3') {
+      const base = 75;
+      ['ceph-core-01', 'ceph-core-02', 'ceph-core-03'].forEach((h, i) => addNode({
+        hostname: h, ip: `10.10.1.${base + i}`,
+        roles: ['ceph-mon', 'ceph-mgr', 'ceph-mds'], os: 'leap',
+        cpu: 4, memory_gb: 8, disk_gb: 64
+      }));
+    }
+    if (preset === 'ceph-osd-3') {
       const base = 91;
       ['ceph-osd-01', 'ceph-osd-02', 'ceph-osd-03'].forEach((h, i) => addNode({
         hostname: h, ip: `10.10.1.${base + i}`,
         cluster_ip: `172.16.1.${base + i}`,
-        roles: ['ceph-mon', 'ceph-mgr', 'ceph-osd'], os: 'leap',
+        roles: ['ceph-osd'], os: 'leap',
         cpu: 4, memory_gb: 6, disk_gb: 64,
-        storage_devices: ['/dev/sdb', '/dev/sdc']
+        storage_devices: ['/dev/sdb', '/dev/sdc']  // sdb=data, sdc=WAL/DB
       }));
     }
+    if (preset === 'ceph-rgw-2') {
+      const base = 81;
+      ['ceph-rgw-01', 'ceph-rgw-02'].forEach((h, i) => addNode({
+        hostname: h, ip: `10.10.1.${base + i}`,
+        roles: ['ceph-rgw'], os: 'leap',
+        cpu: 2, memory_gb: 4, disk_gb: 64
+      }));
+    }
+  }
+
+  function storageDevicesText(n: NodeSpec): string {
+    return (n.storage_devices ?? []).join(', ');
+  }
+  function setStorageDevices(idx: number, text: string) {
+    const list = text.split(',').map(s => s.trim()).filter(Boolean);
+    updateNode(idx, { storage_devices: list });
   }
 
   // Live YAML preview
@@ -136,38 +203,42 @@ content:
         <Field label={$_('step4.timezone')}>
           <input bind:value={$wizardStore.inventory.cluster.timezone} />
         </Field>
-        <Field label={$_('step4.k8sDistro')}>
-          <select bind:value={$wizardStore.inventory.cluster.kubernetes.distro}>
-            <option value="rke2">RKE2</option>
-            <option value="k3s">K3s</option>
-          </select>
-        </Field>
-        <Field label={$_('step4.k8sVersion')}>
-          <input bind:value={$wizardStore.inventory.cluster.kubernetes.version} />
-        </Field>
-        <Field label={$_('step4.cni')}>
-          <select bind:value={$wizardStore.inventory.cluster.kubernetes.cni}>
-            <option value="cilium">Cilium</option>
-            <option value="canal">Canal</option>
-            <option value="calico">Calico</option>
-          </select>
-        </Field>
+        {#if showK8s}
+          <Field label={$_('step4.k8sDistro')}>
+            <select bind:value={$wizardStore.inventory.cluster.kubernetes.distro}>
+              <option value="rke2">RKE2</option>
+              <option value="k3s">K3s</option>
+            </select>
+          </Field>
+          <Field label={$_('step4.k8sVersion')}>
+            <input bind:value={$wizardStore.inventory.cluster.kubernetes.version} />
+          </Field>
+          <Field label={$_('step4.cni')}>
+            <select bind:value={$wizardStore.inventory.cluster.kubernetes.cni}>
+              <option value="cilium">Cilium</option>
+              <option value="canal">Canal</option>
+              <option value="calico">Calico</option>
+            </select>
+          </Field>
+        {/if}
       </div>
     </Section>
 
     <Section title={$_('step4.network')}>
       <div class="grid-2">
-        <Field label={$_('step4.podCIDR')}><input bind:value={$wizardStore.inventory.network.pod_cidr} /></Field>
-        <Field label={$_('step4.serviceCIDR')}><input bind:value={$wizardStore.inventory.network.service_cidr} /></Field>
-        <Field label={$_('step4.vip')} hint={$_('step4.vipHint')} required>
-          <input bind:value={$wizardStore.inventory.network.vip} />
-        </Field>
-        <Field label={$_('step4.lbPool')} hint={$_('step4.lbPoolHint')}>
-          <input bind:value={$wizardStore.inventory.network.lb_pool} />
-        </Field>
-        <Field label={$_('step4.ingressLBIP')}>
-          <input bind:value={$wizardStore.inventory.network.ingress_lb_ip} />
-        </Field>
+        {#if showK8s}
+          <Field label={$_('step4.podCIDR')}><input bind:value={$wizardStore.inventory.network.pod_cidr} /></Field>
+          <Field label={$_('step4.serviceCIDR')}><input bind:value={$wizardStore.inventory.network.service_cidr} /></Field>
+          <Field label={$_('step4.vip')} hint={$_('step4.vipHint')} required>
+            <input bind:value={$wizardStore.inventory.network.vip} />
+          </Field>
+          <Field label={$_('step4.lbPool')} hint={$_('step4.lbPoolHint')}>
+            <input bind:value={$wizardStore.inventory.network.lb_pool} />
+          </Field>
+          <Field label={$_('step4.ingressLBIP')}>
+            <input bind:value={$wizardStore.inventory.network.ingress_lb_ip} />
+          </Field>
+        {/if}
         <Field label={$_('step4.gateway')}>
           <input bind:value={$wizardStore.inventory.network.gateway} />
         </Field>
@@ -176,6 +247,61 @@ content:
         </Field>
       </div>
     </Section>
+
+    {#if showCeph}
+      <Section title="Ceph 구성"
+               subtitle="Ceph 데몬 네트워크와 풀 — 스토리지 노드들이 사용하는 네트워크는 K8s와 별개입니다.">
+        <div class="grid-2">
+          <Field label="Public network (CIDR)"
+                 hint="mon/mgr/mds/osd가 클라이언트와 통신하는 네트워크. 모든 Ceph 노드 IP가 이 CIDR에 들어가야 함.">
+            <input value={$wizardStore.inventory.ceph.public_network}
+                   oninput={(e) => updateCeph({ public_network: (e.target as HTMLInputElement).value })}
+                   placeholder="10.10.1.0/24" />
+          </Field>
+          <Field label="Cluster network (CIDR, 선택)"
+                 hint="OSD 간 백엔드 복제 트래픽 분리용. 비워두면 public network 재사용. 권장: 10G 이상 별도 NIC.">
+            <input value={$wizardStore.inventory.ceph.cluster_network}
+                   oninput={(e) => updateCeph({ cluster_network: (e.target as HTMLInputElement).value })}
+                   placeholder="172.16.1.0/24" />
+          </Field>
+        </div>
+
+        <Field label="활성화할 풀"
+               hint="rbd: K8s PVC 블록 / cephfs: ReadWriteMany 파일 / rgw: S3 호환 오브젝트">
+          <div class="pool-row">
+            <label class="pool-chip" class:active={$wizardStore.inventory.ceph.pools.includes('rbd')}>
+              <input type="checkbox"
+                     checked={$wizardStore.inventory.ceph.pools.includes('rbd')}
+                     onchange={(e) => togglePool('rbd', (e.target as HTMLInputElement).checked)} />
+              RBD <span class="pool-sub">(블록)</span>
+            </label>
+            <label class="pool-chip" class:active={$wizardStore.inventory.ceph.pools.includes('cephfs')}>
+              <input type="checkbox"
+                     checked={$wizardStore.inventory.ceph.pools.includes('cephfs')}
+                     onchange={(e) => togglePool('cephfs', (e.target as HTMLInputElement).checked)} />
+              CephFS <span class="pool-sub">(파일·RWX)</span>
+            </label>
+            <label class="pool-chip" class:active={$wizardStore.inventory.ceph.pools.includes('rgw')}>
+              <input type="checkbox"
+                     checked={$wizardStore.inventory.ceph.pools.includes('rgw')}
+                     onchange={(e) => togglePool('rgw', (e.target as HTMLInputElement).checked)} />
+              RGW <span class="pool-sub">(S3)</span>
+            </label>
+          </div>
+        </Field>
+
+        {#if cephHints.length > 0}
+          <div class="ceph-hints">
+            {#each cephHints as h}
+              <div class="hint-row hint-{h.tone}">
+                <Badge tone={h.tone}>{h.tone === 'danger' ? '필수' : '권장'}</Badge>
+                <span>{h.msg}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </Section>
+    {/if}
 
     <Section title={$_('step4.nodes')}
              subtitle={$wizardStore.inventory.nodes.length + ' nodes'}>
@@ -186,7 +312,9 @@ content:
           <Button onclick={() => addPreset('rke2-3')}>+ RKE2 control-plane × 3</Button>
         {/if}
         {#if topology !== 'k8s-only'}
-          <Button onclick={() => addPreset('ceph-3')}>+ Ceph OSD × 3</Button>
+          <Button onclick={() => addPreset('ceph-core-3')}>+ Ceph CORE × 3 (mon/mgr/mds)</Button>
+          <Button onclick={() => addPreset('ceph-osd-3')}>+ Ceph OSD × 3 (data + WAL)</Button>
+          <Button onclick={() => addPreset('ceph-rgw-2')}>+ Ceph RGW × 2 (S3)</Button>
         {/if}
       </div>
 
@@ -241,6 +369,17 @@ content:
               {/each}
             </div>
           </Field>
+
+          {#if node.roles.includes('ceph-osd')}
+            <Field label="Storage devices (OSD 데이터 디스크)"
+                   hint="cephadm이 BlueStore OSD로 사용할 블록 디바이스 목록 (쉼표 구분). 첫 번째=data, 두 번째=WAL/DB. 예: /dev/sdb, /dev/sdc"
+                   error={(node.storage_devices ?? []).length === 0 ? '최소 1개 디바이스 필요 — 비어있으면 cephadm bootstrap이 OSD를 생성할 수 없습니다' : ''}
+                   required>
+              <input value={storageDevicesText(node)}
+                     oninput={(e) => setStorageDevices(i, (e.target as HTMLInputElement).value)}
+                     placeholder="/dev/sdb, /dev/sdc" />
+            </Field>
+          {/if}
         </div>
       {/each}
 
@@ -311,4 +450,19 @@ content:
   .yaml { background: #0a0a0c; border: 1px solid #2a2a30; padding: 0.75rem;
           border-radius: 5px; font-family: ui-monospace, monospace; font-size: 0.78rem;
           line-height: 1.5; max-height: 70vh; overflow: auto; color: #d4d4d8; margin: 0; }
+
+  .pool-row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  .pool-chip { display: flex; gap: 0.4rem; align-items: center; padding: 0.35rem 0.7rem;
+               background: #27272a; border: 1px solid #3f3f46; border-radius: 5px;
+               font-size: 0.85rem; cursor: pointer; user-select: none; color: #a1a1aa; }
+  .pool-chip.active { background: #1e293b; border-color: #f59e0b; color: #fbbf24; }
+  .pool-chip input { accent-color: #f59e0b; }
+  .pool-sub { font-size: 0.7rem; color: #71717a; }
+  .pool-chip.active .pool-sub { color: #d97706; }
+
+  .ceph-hints { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.5rem;
+                padding-top: 0.75rem; border-top: 1px solid #2a2a30; }
+  .hint-row { display: flex; gap: 0.5rem; align-items: flex-start; font-size: 0.8rem;
+              line-height: 1.5; color: #d4d4d8; }
+  .hint-row span { flex: 1; }
 </style>
