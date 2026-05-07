@@ -1,0 +1,17 @@
+---
+# Install RKE2 using rancher/rke2-ansible. The Windows installer chooses this
+# playbook (or 20-k3s.yml) based on inventory.cluster.kubernetes.distro.
+- import_playbook: ../collections/ansible_collections/../../roles/rke2-ansible/playbooks/site.yml
+  vars:
+    rke2_version: "{{ kubernetes_version }}"
+    rke2_cni:     "{{ cni }}"
+    rke2_ha_mode: true
+    rke2_ha_mode_keepalived: false
+    rke2_ha_mode_kubevip: true
+    rke2_api_ip:  "{{ kube_vip }}"
+    rke2_loadbalancer_ip_range:
+      - "{{ lb_pool }}"
+    rke2_download_kubeconf: true
+    rke2_download_kubeconf_path: "{{ playbook_dir }}/../../runs/kubeconfig"
+    rke2_disable:
+      - rke2-ingress-nginx        # we install our own pinned ingress in 40-addons.yml

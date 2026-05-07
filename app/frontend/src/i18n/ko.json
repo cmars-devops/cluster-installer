@@ -1,0 +1,21 @@
+{
+  "app": {
+    "title": "클러스터 인스톨러"
+  },
+  "step": {
+    "1": { "short": "프로젝트", "title": "프로젝트 선택" },
+    "2": { "short": "타겟",     "title": "타겟 환경 선택" },
+    "3": { "short": "OS",       "title": "OS 이미지" },
+    "4": { "short": "인벤토리", "title": "노드 인벤토리" },
+    "5": { "short": "Plan",     "title": "변경사항 미리보기" },
+    "6": { "short": "실행",     "title": "설치 진행" },
+    "7": { "short": "결과",     "title": "결과" }
+  },
+  "common": {
+    "next": "다음",
+    "back": "이전",
+    "cancel": "취소",
+    "apply": "적용",
+    "loading": "로딩 중..."
+  }
+}

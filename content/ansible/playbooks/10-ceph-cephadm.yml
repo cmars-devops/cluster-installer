@@ -1,0 +1,59 @@
+---
+# Bootstrap a Ceph cluster on dedicated storage nodes using cephadm.
+# Delegates to the upstream `ceph/cephadm-ansible` roles installed via
+# collections/requirements.yml.
+- name: Cephadm preflight
+  hosts: mons:mgrs:osds:clients
+  become: true
+  roles:
+    - { role: cephadm-ansible/cephadm_preflight }
+
+- name: Cephadm bootstrap (first mon)
+  hosts: admin[0]
+  become: true
+  roles:
+    - role: cephadm-ansible/cephadm_bootstrap
+      vars:
+        mon_ip: "{{ ansible_host }}"
+        cluster_network: "{{ hostvars['localhost']['ceph_cluster_network'] | default(omit) }}"
+        public_network:  "{{ hostvars['localhost']['ceph_public_network']  | default(omit) }}"
+
+- name: Add additional mons / mgrs / osds
+  hosts: admin[0]
+  become: true
+  tasks:
+    - name: Add hosts to the cluster
+      ansible.builtin.command:
+        cmd: ceph orch host add {{ item }} {{ hostvars[item].ansible_host }}
+      loop: "{{ groups['mons'] | union(groups['mgrs']) | union(groups['osds']) | unique }}"
+      changed_when: false
+
+    - name: Apply mon placement
+      ansible.builtin.command: ceph orch apply mon "{{ groups['mons'] | join(',') }}"
+      changed_when: false
+
+    - name: Apply mgr placement
+      ansible.builtin.command: ceph orch apply mgr "{{ groups['mgrs'] | join(',') }}"
+      changed_when: false
+
+    - name: Add OSDs from declared devices
+      ansible.builtin.command:
+        cmd: ceph orch daemon add osd {{ item }}:{{ hostvars[item].devices | join(',') }}
+      loop: "{{ groups['osds'] }}"
+      changed_when: false
+
+    - name: Create RBD pool
+      ansible.builtin.command: ceph osd pool create rbd 64 64
+      register: rbd_pool
+      changed_when: "'pool' in rbd_pool.stdout"
+      failed_when: rbd_pool.rc != 0 and 'already exists' not in rbd_pool.stderr
+
+    - name: Initialize RBD pool
+      ansible.builtin.command: rbd pool init rbd
+      changed_when: false
+
+- name: Distribute ceph clients to k8s nodes
+  hosts: rke2_servers:rke2_agents:k3s_servers:k3s_agents
+  become: true
+  roles:
+    - { role: cephadm-ansible/cephadm_clients }

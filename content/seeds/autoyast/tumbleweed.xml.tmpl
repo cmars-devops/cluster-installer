@@ -1,0 +1,56 @@
+<?xml version="1.0"?>
+<!DOCTYPE profile>
+<!-- Tumbleweed AutoYaST profile. Currently identical structure to leap.xml.tmpl
+     but split for divergence (Tumbleweed gets newer pattern names occasionally). -->
+<profile xmlns="http://www.suse.com/1.0/yast2ns" xmlns:config="http://www.suse.com/1.0/configns">
+  <general>
+    <mode>
+      <confirm config:type="boolean">false</confirm>
+      <halt config:type="boolean">false</halt>
+      <forceboot config:type="boolean">true</forceboot>
+    </mode>
+  </general>
+
+  <networking>
+    <interfaces config:type="list">
+      <interface>
+        <bootproto>static</bootproto>
+        <ipaddr>{{ .Node.IP }}</ipaddr>
+        <prefixlen>{{ .Network.PrefixLen }}</prefixlen>
+        <name>{{ .Node.NetworkInterface }}</name>
+        <startmode>auto</startmode>
+      </interface>
+    </interfaces>
+    <dns>
+      <nameservers config:type="list">
+        <nameserver>{{ .Network.DNS }}</nameserver>
+      </nameservers>
+      <hostname>{{ .Node.Hostname }}</hostname>
+      <domain>{{ .Cluster.Domain }}</domain>
+    </dns>
+  </networking>
+
+  <software>
+    <patterns config:type="list">
+      <pattern>base</pattern>
+      <pattern>basesystem</pattern>
+    </patterns>
+    <packages config:type="list">
+      <package>chrony</package>
+      <package>python3</package>
+      <package>openssh</package>
+      {{ if .Node.NeedsCeph }}<package>lvm2</package>
+      <package>podman</package>{{ end }}
+    </packages>
+  </software>
+
+  <users config:type="list">
+    <user>
+      <username>root</username>
+      <authorized_keys config:type="list">
+        {{ range .Node.SSHAuthorizedKeys }}<listentry>{{ . }}</listentry>
+        {{ end }}
+      </authorized_keys>
+    </user>
+  </users>
+</profile>

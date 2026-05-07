@@ -1,0 +1,24 @@
+# ceph-csi-rbd values, rendered by Ansible from facts collected in 30-csi-ceph.yml.
+csiConfig:
+  - clusterID: "{{ ceph_cluster_fsid }}"
+    monitors:
+{{ for ep in ceph_mon_endpoints }}      - "{{ ep }}"
+{{ endfor }}
+
+provisioner:
+  replicaCount: 2
+
+storageClass:
+  create: true
+  name: ceph-rbd
+  clusterID: "{{ ceph_cluster_fsid }}"
+  pool: rbd
+  reclaimPolicy: Retain
+  allowVolumeExpansion: true
+  mountOptions: []
+
+secret:
+  create: true
+  name: csi-rbd-secret
+  userID: admin
+  userKey: "{{ ceph_admin_keyring_b64 | b64decode | regex_search('key = (\\S+)', '\\1') | first }}"

@@ -1,0 +1,55 @@
+#!/bin/bash
+# combustion: network
+#
+# openSUSE MicroOS / SLE Micro first-boot configurator. Combustion runs after
+# Ignition and before pivoting to the real root. The 'network' flag above tells
+# Combustion to bring up networking before this script runs (needed for zypper
+# / transactional-update).
+#
+# This is a Go text/template file rendered by the Windows installer per node,
+# then packed into the seed ISO at /combustion/script with label 'ignition'.
+
+set -euxo pipefail
+
+# --- hostname / network ----------------------------------------------------
+echo "{{ .Node.Hostname }}" > /etc/hostname
+
+cat > /etc/NetworkManager/system-connections/static.nmconnection <<EOF
+[connection]
+id=static
+type=ethernet
+interface-name={{ .Node.NetworkInterface }}
+autoconnect=true
+
+[ipv4]
+method=manual
+addresses={{ .Node.IP }}/{{ .Network.PrefixLen }}
+gateway={{ .Network.Gateway }}
+dns={{ .Network.DNS }}
+
+[ipv6]
+method=ignore
+EOF
+chmod 600 /etc/NetworkManager/system-connections/static.nmconnection
+
+# --- ssh key for root ------------------------------------------------------
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+cat > /root/.ssh/authorized_keys <<'EOF'
+{{ range .Node.SSHAuthorizedKeys }}{{ . }}
+{{ end }}EOF
+chmod 600 /root/.ssh/authorized_keys
+
+# --- packages needed by Ansible/cephadm/RKE2 -------------------------------
+# transactional-update is required because MicroOS root is read-only.
+transactional-update --non-interactive pkg install \
+    python3 \
+    open-iscsi \
+    {{ if .Node.NeedsCeph }}lvm2 podman {{ end }}\
+    chrony
+
+systemctl enable chronyd
+
+# Tell the system to reboot into the new snapshot once combustion finishes.
+# (Combustion handles the reboot when this script exits 0 with this marker.)
+exit 0

@@ -1,0 +1,75 @@
+# Rendered by the Windows installer (Go text/template) from inventory.yaml.
+# Group structure follows the rke2-ansible / cephadm-ansible role expectations.
+---
+all:
+  vars:
+    ansible_user: root
+    ansible_ssh_private_key_file: "{{ "{{" }} lookup('env','ANSIBLE_SSH_KEY_PATH') {{ "}}" }}"
+    cluster_name: {{ .Cluster.Name }}
+    cluster_domain: {{ .Cluster.Domain }}
+    pod_cidr: {{ .Network.PodCIDR }}
+    service_cidr: {{ .Network.ServiceCIDR }}
+    kube_vip: {{ .Network.VIP }}
+    lb_pool: {{ .Network.LBPool }}
+    cni: {{ .Cluster.Kubernetes.CNI }}
+
+  children:
+    # ------------ Kubernetes groups (rke2-ansible / k3s-ansible style) -----
+    rke2_servers:
+      hosts:
+        {{- range .Nodes }}{{ if .HasRole "control-plane" }}
+        {{ .Hostname }}:
+          ansible_host: {{ .IP }}
+        {{- end }}{{ end }}
+    rke2_agents:
+      hosts:
+        {{- range .Nodes }}{{ if .HasRole "worker" }}
+        {{ .Hostname }}:
+          ansible_host: {{ .IP }}
+        {{- end }}{{ end }}
+
+    k3s_servers:
+      hosts:
+        {{- range .Nodes }}{{ if .HasRole "control-plane" }}
+        {{ .Hostname }}:
+          ansible_host: {{ .IP }}
+        {{- end }}{{ end }}
+    k3s_agents:
+      hosts:
+        {{- range .Nodes }}{{ if .HasRole "worker" }}
+        {{ .Hostname }}:
+          ansible_host: {{ .IP }}
+        {{- end }}{{ end }}
+
+    # ------------ Ceph groups (cephadm-ansible style) ----------------------
+    admin:
+      hosts:
+        {{- range .Nodes }}{{ if .HasRole "ceph-mon" }}
+        {{ .Hostname }}:
+          ansible_host: {{ .IP }}
+        {{- end }}{{ end }}
+    mons:
+      hosts:
+        {{- range .Nodes }}{{ if .HasRole "ceph-mon" }}
+        {{ .Hostname }}:
+          ansible_host: {{ .IP }}
+        {{- end }}{{ end }}
+    mgrs:
+      hosts:
+        {{- range .Nodes }}{{ if .HasRole "ceph-mgr" }}
+        {{ .Hostname }}:
+          ansible_host: {{ .IP }}
+        {{- end }}{{ end }}
+    osds:
+      hosts:
+        {{- range .Nodes }}{{ if .HasRole "ceph-osd" }}
+        {{ .Hostname }}:
+          ansible_host: {{ .IP }}
+          devices: {{ .StorageDevicesJSON }}
+        {{- end }}{{ end }}
+    clients:
+      hosts:
+        {{- range .Nodes }}{{ if not .IsCephOnly }}
+        {{ .Hostname }}:
+          ansible_host: {{ .IP }}
+        {{- end }}{{ end }}

@@ -1,0 +1,21 @@
+{
+  "app": {
+    "title": "Cluster Installer"
+  },
+  "step": {
+    "1": { "short": "Project",   "title": "Select project" },
+    "2": { "short": "Target",    "title": "Choose target environment" },
+    "3": { "short": "OS",        "title": "OS image" },
+    "4": { "short": "Inventory", "title": "Node inventory" },
+    "5": { "short": "Plan",      "title": "Preview changes" },
+    "6": { "short": "Run",       "title": "Install" },
+    "7": { "short": "Result",    "title": "Result" }
+  },
+  "common": {
+    "next": "Next",
+    "back": "Back",
+    "cancel": "Cancel",
+    "apply": "Apply",
+    "loading": "Loading..."
+  }
+}

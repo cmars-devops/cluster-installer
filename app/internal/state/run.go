@@ -1,0 +1,167 @@
+// Package state owns the per-run JSON document under
+// %LOCALAPPDATA%\cluster-installer\runs\<run-id>\run.json. The wizard reads
+// and writes this document to support stop/resume.
+package state
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/triangles-co-kr/cluster-installer/internal/inventory"
+	"github.com/triangles-co-kr/cluster-installer/internal/runtime"
+)
+
+// Stage names map 1:1 to the pipeline phases.
+type Stage string
+
+const (
+	StagePending     Stage = "pending"
+	StageSeedISO     Stage = "seed_iso"
+	StageTFInit      Stage = "terraform_init"
+	StageTFPlan      Stage = "terraform_plan"
+	StageTFApply     Stage = "terraform_apply"
+	StageWaitSSH     Stage = "wait_ssh"
+	StagePreflight   Stage = "preflight"
+	StageCeph        Stage = "ceph"
+	StageK8s         Stage = "kubernetes"
+	StageCSI         Stage = "csi"
+	StageAddons      Stage = "addons"
+	StageCompleted   Stage = "completed"
+	StageFailed      Stage = "failed"
+)
+
+type Run struct {
+	ID         string              `json:"id"`
+	CreatedAt  time.Time           `json:"created_at"`
+	UpdatedAt  time.Time           `json:"updated_at"`
+	Inventory  inventory.Inventory `json:"inventory"`
+	Stage      Stage               `json:"stage"`
+	LastError  string              `json:"last_error,omitempty"`
+	History    []Event             `json:"history"`
+}
+
+type Event struct {
+	At    time.Time `json:"at"`
+	Stage Stage     `json:"stage"`
+	Msg   string    `json:"msg"`
+}
+
+type RunSummary struct {
+	ID        string    `json:"id"`
+	Cluster   string    `json:"cluster"`
+	Target    string    `json:"target"`
+	Stage     Stage     `json:"stage"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type Store struct {
+	mu sync.Mutex
+}
+
+func New() *Store { return &Store{} }
+
+func (s *Store) NewRun(inv inventory.Inventory) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := uuid.NewString()
+	r := Run{
+		ID:        id,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Inventory: inv,
+		Stage:     StagePending,
+	}
+	if err := s.save(r); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func (s *Store) Load(id string) (Run, error) {
+	p := filepath.Join(runtime.RunsDir(), id, "run.json")
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		return Run{}, err
+	}
+	var r Run
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return Run{}, err
+	}
+	return r, nil
+}
+
+func (s *Store) save(r Run) error {
+	dir := filepath.Join(runtime.RunsDir(), r.ID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	r.UpdatedAt = time.Now()
+	tmp := filepath.Join(dir, "run.json.tmp")
+	raw, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(dir, "run.json"))
+}
+
+// Update applies fn under lock and persists the result.
+func (s *Store) Update(id string, fn func(*Run)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.Load(id)
+	if err != nil {
+		return err
+	}
+	fn(&r)
+	return s.save(r)
+}
+
+// List enumerates recent runs (oldest-first eviction left to caller).
+func (s *Store) List() ([]RunSummary, error) {
+	entries, err := os.ReadDir(runtime.RunsDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	out := make([]RunSummary, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		r, err := s.Load(e.Name())
+		if err != nil {
+			continue
+		}
+		out = append(out, RunSummary{
+			ID:        r.ID,
+			Cluster:   r.Inventory.Cluster.Name,
+			Target:    fmt.Sprintf("%s://%s", r.Inventory.Target.Type, r.Inventory.Target.Endpoint),
+			Stage:     r.Stage,
+			UpdatedAt: r.UpdatedAt,
+		})
+	}
+	return out, nil
+}
+
+// OpenRunCount is used by the shutdown hook for a status line.
+func (s *Store) OpenRunCount() int {
+	rs, _ := s.List()
+	n := 0
+	for _, r := range rs {
+		if r.Stage != StageCompleted && r.Stage != StageFailed {
+			n++
+		}
+	}
+	return n
+}

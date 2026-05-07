@@ -1,0 +1,12 @@
+---
+# Install K3s using k3s-io/k3s-ansible (alternative to 20-rke2.yml).
+- import_playbook: ../collections/ansible_collections/../../roles/k3s-ansible/playbooks/site.yml
+  vars:
+    k3s_version: "{{ kubernetes_version }}"
+    api_endpoint: "{{ kube_vip }}"
+    extra_server_args: >-
+      --disable=traefik
+      --disable=servicelb
+      --flannel-backend=none
+      --disable-network-policy
+    extra_agent_args: ""

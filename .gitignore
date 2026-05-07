@@ -1,0 +1,40 @@
+# Build artifacts
+app/build/bin/
+app/frontend/dist/
+app/frontend/node_modules/
+app/frontend/wailsjs/
+app/internal/embedded/bin/
+
+# Go
+*.exe
+*.test
+*.out
+vendor/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local install / state
+.go-install.log
+*.local.*
+runs/
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log
+
+# Ansible
+*.retry
+content/ansible/collections/ansible_collections/
+
+# Secrets — never commit
+*.pem
+*.key
+secrets.yaml

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "cluster-installer",
+  "outputfilename": "cluster-installer",
+  "frontend:install": "npm ci",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "wailsjsdir": "./frontend/wailsjs",
+  "author": {
+    "name": "Triangles",
+    "email": "cmars@triangles.co.kr"
+  },
+  "info": {
+    "productName": "Cluster Installer",
+    "productVersion": "0.1.0-dev",
+    "copyright": "© 2026 Triangles",
+    "comments": "openSUSE/MicroOS + Ceph + RKE2/K3s wizard installer"
+  }
+}

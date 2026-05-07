@@ -1,0 +1,63 @@
+---
+# Wire ceph-csi to the freshly-installed k8s cluster.
+# Pulls Ceph admin keyring from the first mon, then installs the ceph-csi Helm
+# chart with values rendered from manifests/helm/ceph-csi/values.yaml.tmpl.
+- name: Fetch Ceph admin keyring & cluster info
+  hosts: admin[0]
+  become: true
+  tasks:
+    - name: Get fsid
+      ansible.builtin.command: ceph fsid
+      register: ceph_fsid
+      changed_when: false
+
+    - name: Get mon endpoints
+      ansible.builtin.command: ceph mon dump -f json
+      register: ceph_mons
+      changed_when: false
+
+    - name: Read admin keyring
+      ansible.builtin.slurp:
+        src: /etc/ceph/ceph.client.admin.keyring
+      register: ceph_admin_keyring
+
+    - name: Stash facts for next play
+      ansible.builtin.set_fact:
+        ceph_cluster_fsid: "{{ ceph_fsid.stdout }}"
+        ceph_mon_endpoints: "{{ (ceph_mons.stdout | from_json).mons | map(attribute='public_addr') | list }}"
+        ceph_admin_keyring_b64: "{{ ceph_admin_keyring.content }}"
+      delegate_facts: true
+      delegate_to: localhost
+
+- name: Install ceph-csi via Helm
+  hosts: localhost
+  connection: local
+  tasks:
+    - name: Render values
+      ansible.builtin.template:
+        src: ../../manifests/helm/ceph-csi/values.yaml.tmpl
+        dest: "{{ playbook_dir }}/../../runs/ceph-csi.values.yaml"
+
+    - name: Add ceph-csi repo
+      kubernetes.core.helm_repository:
+        name: ceph-csi
+        repo_url: https://ceph.github.io/csi-charts
+
+    - name: Install ceph-csi-rbd
+      kubernetes.core.helm:
+        name: ceph-csi-rbd
+        chart_ref: ceph-csi/ceph-csi-rbd
+        release_namespace: ceph-csi
+        create_namespace: true
+        kubeconfig: "{{ playbook_dir }}/../../runs/kubeconfig"
+        values_files:
+          - "{{ playbook_dir }}/../../runs/ceph-csi.values.yaml"
+
+    - name: Install ceph-csi-cephfs
+      kubernetes.core.helm:
+        name: ceph-csi-cephfs
+        chart_ref: ceph-csi/ceph-csi-cephfs
+        release_namespace: ceph-csi
+        kubeconfig: "{{ playbook_dir }}/../../runs/kubeconfig"
+        values_files:
+          - "{{ playbook_dir }}/../../runs/ceph-csi.values.yaml"
