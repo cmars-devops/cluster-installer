@@ -1,7 +1,18 @@
-// ESXi pre-TF stage: push every node's seed ISO to the vSphere datastore
-// at the path tfvars.go references. The orchestrator runs this only for
-// target.type=esxi; libvirt and Proxmox seeds attach directly from the
-// local staging dir (their providers can read the host filesystem).
+// ESXi pre-TF stage: push every node's CD-ROM media to the vSphere
+// datastore at the path tfvars.go references. The orchestrator runs
+// this only for target.type=esxi; libvirt and Proxmox can read the
+// host filesystem directly.
+//
+// Two ISO flavours land on the datastore per run:
+//
+//	seed-<host>.iso       Combustion+Ignition seed (always — every node
+//	                      gets one even Agama nodes, used as a secondary
+//	                      CD-ROM that carries SSH keys / hostname / etc.
+//	                      on first boot for Leap/Tumbleweed too).
+//	install-<host>.iso    Per-node Agama-remastered netinstall image —
+//	                      only for Leap/Tumbleweed. The kernel cmdline
+//	                      inside the ISO is rewritten to point at our
+//	                      HTTP-served auto-install profile.
 package run
 
 import (
@@ -9,18 +20,11 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/cmars-devops/cluster-installer/internal/imagecache"
 	"github.com/cmars-devops/cluster-installer/internal/runner/esxi"
+	apruntime "github.com/cmars-devops/cluster-installer/internal/runtime"
 )
 
-// uploadSeedsToDatastore fans the local staging/seeds/seed-<host>.iso
-// files out to the chosen iso datastore at the path the tfvars renderer
-// expects. Each upload streams via govmomi's HTTP /folder endpoint with
-// 2-second progress lines re-emitted as run:line events.
-//
-// Pre-flight check: ensure target.Datastore + target.ISODatastore are
-// set — without them tfvars renders empty values and the vSphere
-// provider returns an opaque error 30 seconds into apply. Failing fast
-// here makes the user message actionable.
 func (o *Orchestrator) uploadSeedsToDatastore(ctx context.Context) error {
 	t := o.Inventory.Target
 	if t.Datastore == "" {
@@ -28,20 +32,7 @@ func (o *Orchestrator) uploadSeedsToDatastore(ctx context.Context) error {
 	}
 	isoDS := t.ISODatastore
 	if isoDS == "" {
-		isoDS = t.Datastore // operator allowed to share
-	}
-
-	// Reject Leap/Tumbleweed early on ESXi — Agama profile delivery on
-	// vSphere needs ISO remaster (phase-1 §4) and that's not yet shipped.
-	// Without remaster the netinstall ISO drops the user into Agama's
-	// interactive UI and the run hangs forever waiting for SSH.
-	for _, n := range o.Inventory.Nodes {
-		if n.OS == "leap" || n.OS == "tumbleweed" {
-			return fmt.Errorf("ESXi + Agama (%s) is not yet supported — only MicroOS works on ESXi today. "+
-				"Track: docs/phase-1-open-items.md §4 (Agama ISO remaster). "+
-				"Workaround: switch %s to microos in Step 3, or pick libvirt as the target.",
-				n.OS, n.Hostname)
-		}
+		isoDS = t.Datastore
 	}
 
 	c, err := esxi.NewClient(ctx, t)
@@ -50,20 +41,68 @@ func (o *Orchestrator) uploadSeedsToDatastore(ctx context.Context) error {
 	}
 	defer c.Close(ctx)
 
-	o.emit("run:line", fmt.Sprintf("→ uploading %d seed ISOs to [%s]", len(o.Inventory.Nodes), isoDS))
+	o.emit("run:line", fmt.Sprintf("→ uploading per-node ISOs to [%s]", isoDS))
 	emit := func(line string) { o.emit("run:line", line) }
 
 	dsPrefix := "cluster-installer/" + o.Run.ID + "/"
+
 	for _, n := range o.Inventory.Nodes {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		local := filepath.Join(o.stagingDir, "seeds", "seed-"+n.Hostname+".iso")
-		dsRel := dsPrefix + "seed-" + n.Hostname + ".iso"
-		if err := c.UploadFile(ctx, isoDS, dsRel, local, emit); err != nil {
+
+		// 1. Combustion seed always — secondary CD-ROM for Agama nodes,
+		//    primary boot config for MicroOS (which has no remastered ISO).
+		seedLocal := filepath.Join(o.stagingDir, "seeds", "seed-"+n.Hostname+".iso")
+		seedRel := dsPrefix + "seed-" + n.Hostname + ".iso"
+		if err := c.UploadFile(ctx, isoDS, seedRel, seedLocal, emit); err != nil {
 			return fmt.Errorf("upload seed for %s: %w", n.Hostname, err)
 		}
+
+		// 2. Per-node Agama-remastered install ISO — Leap/Tumbleweed only.
+		if n.OS == "leap" || n.OS == "tumbleweed" {
+			localISO, err := o.remasterAgamaForNode(ctx, n.Hostname, n.OS)
+			if err != nil {
+				return fmt.Errorf("remaster %s: %w", n.Hostname, err)
+			}
+			installRel := dsPrefix + "install-" + n.Hostname + ".iso"
+			if err := c.UploadFile(ctx, isoDS, installRel, localISO, emit); err != nil {
+				return fmt.Errorf("upload install ISO for %s: %w", n.Hostname, err)
+			}
+		}
 	}
-	o.emit("run:line", "→ all seed ISOs uploaded")
+	o.emit("run:line", "→ all per-node ISOs uploaded")
 	return nil
+}
+
+// remasterAgamaForNode produces a per-node netinstall ISO whose grub /
+// isolinux entries contain `inst.auto=http://<host>/profiles/<name>.json`.
+// Caches by (sha256-of-source-iso, hostname) so re-runs of the same
+// content tag don't pay the I/O cost twice — the rewrite is purely a
+// function of the source ISO + the per-node profile URL, both of which
+// are stable inputs.
+func (o *Orchestrator) remasterAgamaForNode(ctx context.Context, hostname, osFamily string) (string, error) {
+	cat, err := imagecache.LoadCatalog(o.ContentDir)
+	if err != nil {
+		return "", err
+	}
+	catKey, img, ok := cat.LookupForOS(osFamily, "")
+	if !ok {
+		return "", fmt.Errorf("images.yaml has no entry for family=%s", osFamily)
+	}
+
+	progress := imagecache.Progress(func(line string) { o.emit("run:line", line) })
+	cached, err := imagecache.EnsureImage(ctx, apruntime.ImageCache(), catKey, img, progress)
+	if err != nil {
+		return "", fmt.Errorf("ensure source iso: %w", err)
+	}
+
+	dst := filepath.Join(o.stagingDir, "seeds", "install-"+hostname+".iso")
+	profileURL := o.baseURL + "/profiles/" + hostname + ".json"
+	installURL := o.baseURL + "/repo"
+
+	if err := imagecache.RemasterAgamaISO(ctx, cached.Path, dst, profileURL, installURL, progress); err != nil {
+		return "", err
+	}
+	return dst, nil
 }

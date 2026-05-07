@@ -88,11 +88,26 @@ What landed in v1.x:
   Combustion seed ISO to
   `[iso_datastore] cluster-installer/<run-id>/seed-<host>.iso`.
 
-**What's still gated** — Leap/Tumbleweed on ESXi. The orchestrator
-returns a clear error at the upload stage if the inventory has any
-Leap/Tumbleweed node, because Agama profile delivery on vSphere needs
-ISO remaster (see §4 below) — direct kernel boot isn't available via
-the vsphere provider. **MicroOS clusters work end-to-end.**
+**Now also closes Leap/Tumbleweed on ESXi via per-node ISO remaster.**
+`internal/imagecache/remaster.go` walks the upstream netinstall ISO
+with go-diskfs, rewrites `/boot/x86_64/loader/isolinux.cfg` and every
+`grub.cfg` inside the image to append `inst.auto=URL`, `inst.install_url=URL`,
+and `autoyast=URL` to each kernel cmdline (Agama and AutoYaST share
+the same boot menu so the same rewrite serves both installer
+generations). Finalize emits a fresh El Torito boot record using
+`/boot/x86_64/loader/isolinux.bin` as the BIOS boot image.
+
+The orchestrator's `datastore_upload` stage now uploads two ISOs per
+Agama node:
+
+  install-<host>.iso  primary CD, the remastered netinstall (kernel
+                      cmdline points at our HTTP profile)
+  seed-<host>.iso     secondary CD, the existing Combustion+Ignition
+                      seed carrying SSH keys + first-boot config
+
+The vsphere_virtual_machine resource gains a dynamic second `cdrom`
+block — present only when `install_iso_path != ""`, so MicroOS nodes
+remain single-CD as before.
 
 MAC pre-allocation (originally listed alongside ESXi) was already
 closed by §5 — the deterministic-from-cluster-name MAC lands in the

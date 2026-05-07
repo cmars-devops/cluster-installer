@@ -49,9 +49,14 @@ type proxmoxNodeVar struct {
 
 // esxiNodeVar matches content/terraform/stacks/esxi/main.tf > variable "nodes".
 //
-// SeedISOPath / BaseISOPath are datastore-relative (the orchestrator uploads
-// the bytes to ISODatastore via govmomi pre-TF; the path here is what
-// vSphere consumes in vsphere_virtual_machine.cdrom.path).
+// SeedISOPath / InstallISOPath are datastore-relative (the orchestrator
+// uploads the bytes to ISODatastore via govmomi pre-TF; the path here
+// is what vSphere consumes in vsphere_virtual_machine.cdrom.path).
+//
+// InstallISOPath is empty for MicroOS (Combustion does the work via
+// the seed CD); set for Leap/Tumbleweed where the orchestrator rebuilt
+// the netinstall ISO with the kernel cmdline pointing at our
+// HTTP-served Agama profile.
 type esxiNodeVar struct {
 	Name             string `json:"name"`
 	MemoryMB         int    `json:"memory_mb"`
@@ -59,7 +64,7 @@ type esxiNodeVar struct {
 	DiskGB           int    `json:"disk_gb"`
 	ExtraDisksGB     []int  `json:"extra_disks_gb"`
 	SeedISOPath      string `json:"seed_iso_path"`
-	BaseISOPath      string `json:"base_iso_path,omitempty"`
+	InstallISOPath   string `json:"install_iso_path,omitempty"`
 	MAC              string `json:"mac,omitempty"`
 	Datastore        string `json:"datastore,omitempty"`      // per-node disk datastore override
 	ISODatastore     string `json:"iso_datastore,omitempty"`  // per-node ISO datastore override
@@ -214,6 +219,13 @@ func (o *Orchestrator) writeESXiTFVars(path string) error {
 			Datastore:        n.Datastore, // per-node placement override
 			DiskProvisioning: defaultStr(n.DiskProvisioning, "thin"),
 			GuestID:          esxiGuestIDFor(n.OS),
+		}
+		// Leap/Tumbleweed: the orchestrator's pre-TF stage rebuilds the
+		// netinstall ISO per node with our cmdline. MicroOS skips this —
+		// the qcow2-derived install path doesn't apply (no live netinstall
+		// concept; Combustion via the seed CD is sufficient).
+		if n.OS == "leap" || n.OS == "tumbleweed" {
+			nv.InstallISOPath = dsRunRoot + "install-" + n.Hostname + ".iso"
 		}
 		nodes = append(nodes, nv)
 	}
