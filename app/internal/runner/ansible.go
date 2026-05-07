@@ -6,7 +6,7 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/triangles-co-kr/cluster-installer/internal/runtime"
+	"github.com/cmars-devops/cluster-installer/internal/runtime"
 )
 
 // AnsibleRun executes one playbook from the content tree.

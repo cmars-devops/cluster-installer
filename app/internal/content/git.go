@@ -10,8 +10,8 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/triangles-co-kr/cluster-installer/internal/logging"
-	"github.com/triangles-co-kr/cluster-installer/internal/runtime"
+	"github.com/cmars-devops/cluster-installer/internal/logging"
+	"github.com/cmars-devops/cluster-installer/internal/runtime"
 )
 
 // Fetch returns the absolute filesystem path of the content repo checked out
@@ -19,7 +19,7 @@ import (
 // %LOCALAPPDATA%\cluster-installer\content\<ref>\.
 func Fetch(ctx context.Context, repoURL, ref string, log *logging.Logger) (string, error) {
 	if repoURL == "" {
-		repoURL = "https://github.com/triangles-co-kr/cluster-installer-content.git"
+		repoURL = "https://github.com/cmars-devops/cluster-installer-content.git"
 	}
 	if ref == "" {
 		return "", fmt.Errorf("content ref is required")

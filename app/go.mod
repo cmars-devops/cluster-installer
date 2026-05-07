@@ -1,4 +1,4 @@
-module github.com/triangles-co-kr/cluster-installer
+module github.com/cmars-devops/cluster-installer
 
 go 1.23
 

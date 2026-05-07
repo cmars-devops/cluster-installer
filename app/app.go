@@ -7,12 +7,12 @@ import (
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"github.com/triangles-co-kr/cluster-installer/internal/content"
-	"github.com/triangles-co-kr/cluster-installer/internal/inventory"
-	"github.com/triangles-co-kr/cluster-installer/internal/logging"
-	"github.com/triangles-co-kr/cluster-installer/internal/run"
-	"github.com/triangles-co-kr/cluster-installer/internal/runtime"
-	"github.com/triangles-co-kr/cluster-installer/internal/state"
+	"github.com/cmars-devops/cluster-installer/internal/content"
+	"github.com/cmars-devops/cluster-installer/internal/inventory"
+	"github.com/cmars-devops/cluster-installer/internal/logging"
+	"github.com/cmars-devops/cluster-installer/internal/run"
+	"github.com/cmars-devops/cluster-installer/internal/runtime"
+	"github.com/cmars-devops/cluster-installer/internal/state"
 )
 
 // App is the Wails-bound singleton. Every method here is callable from the

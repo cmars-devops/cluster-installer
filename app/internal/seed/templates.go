@@ -18,7 +18,7 @@ import (
 	"path/filepath"
 	"text/template"
 
-	"github.com/triangles-co-kr/cluster-installer/internal/inventory"
+	"github.com/cmars-devops/cluster-installer/internal/inventory"
 )
 
 // Context is what every seed template sees.

@@ -11,7 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/triangles-co-kr/cluster-installer/internal/runtime"
+	"github.com/cmars-devops/cluster-installer/internal/runtime"
 )
 
 // TFRun is a single terraform invocation.

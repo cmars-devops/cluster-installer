@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/triangles-co-kr/cluster-installer/internal/inventory"
+	"github.com/cmars-devops/cluster-installer/internal/inventory"
 )
 
 // libvirtNodeVar matches the object shape declared in

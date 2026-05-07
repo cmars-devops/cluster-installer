@@ -115,7 +115,7 @@
       "additionalProperties": false,
       "properties": {
         "ref": { "type": "string", "description": "git tag or commit of the content repo" },
-        "repo": { "type": "string", "format": "uri", "default": "https://github.com/triangles-co-kr/cluster-installer-content.git" }
+        "repo": { "type": "string", "format": "uri", "default": "https://github.com/cmars-devops/cluster-installer-content.git" }
       }
     }
   }

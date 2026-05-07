@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"text/template"
 
-	"github.com/triangles-co-kr/cluster-installer/internal/inventory"
+	"github.com/cmars-devops/cluster-installer/internal/inventory"
 )
 
 // inventoryCtx is the context fed to hosts.yml.tmpl. The template adds Helm

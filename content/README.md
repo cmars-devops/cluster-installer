@@ -1,7 +1,7 @@
 # cluster-installer-content
 
 Versioned IaC content (Terraform / Ansible / Helm / Agama / Combustion+Ignition)
-consumed at runtime by the [cluster-installer](https://github.com/triangles-co-kr/cluster-installer) Windows GUI.
+consumed at runtime by the [cluster-installer](https://github.com/cmars-devops/cluster-installer) Windows GUI.
 
 The installer pulls a specific git tag of this repo via `go-git`. The exe is thin;
 all installation logic lives here.

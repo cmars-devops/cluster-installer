@@ -10,7 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/triangles-co-kr/cluster-installer/internal/logging"
+	"github.com/cmars-devops/cluster-installer/internal/logging"
 )
 
 // Status reports the readiness of the per-user runtime.

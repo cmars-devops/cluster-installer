@@ -99,7 +99,7 @@ const defaultInventory: Inventory = {
     monitoring: 'kube-prometheus-stack',
     gitops: 'none'
   },
-  content: { ref: 'v0.1.0', repo: 'https://github.com/triangles-co-kr/cluster-installer-content.git' }
+  content: { ref: 'v0.1.0', repo: 'https://github.com/cmars-devops/cluster-installer-content.git' }
 };
 
 export const wizardStore = writable<WizardState>({

@@ -13,8 +13,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/triangles-co-kr/cluster-installer/internal/inventory"
-	"github.com/triangles-co-kr/cluster-installer/internal/runtime"
+	"github.com/cmars-devops/cluster-installer/internal/inventory"
+	"github.com/cmars-devops/cluster-installer/internal/runtime"
 )
 
 // Stage names map 1:1 to the pipeline phases.
