@@ -212,6 +212,37 @@
     advancedOSD = { ...advancedOSD, [idx]: !advancedOSD[idx] };
   }
 
+  // Per-node row expand/collapse. Default = collapsed. Manual "+ 노드 추가"
+  // expands the new row so the user can fill it in immediately; preset-added
+  // nodes stay collapsed because their defaults are already sensible.
+  let nodeExpanded = $state<Record<number, boolean>>({});
+  function toggleNode(idx: number) {
+    nodeExpanded = { ...nodeExpanded, [idx]: !nodeExpanded[idx] };
+  }
+  function expandAllNodes() {
+    const next: Record<number, boolean> = {};
+    $wizardStore.inventory.nodes.forEach((_, i) => (next[i] = true));
+    nodeExpanded = next;
+  }
+  function collapseAllNodes() {
+    nodeExpanded = {};
+  }
+  // Used to auto-expand the row created by the "+ 노드 추가" button.
+  function addNodeManual() {
+    const newIdx = $wizardStore.inventory.nodes.length;
+    addNode();
+    nodeExpanded = { ...nodeExpanded, [newIdx]: true };
+  }
+
+  // Concise per-node validation summary surfaced on the collapsed row.
+  function rowIssues(n: NodeSpec): string[] {
+    const errs: string[] = [];
+    if (!n.ip) errs.push('IP 누락');
+    if (n.roles.length === 0) errs.push('역할 없음');
+    if (n.roles.includes('ceph-osd') && dataDevicesOf(n).length === 0) errs.push('Data devices 누락');
+    return errs;
+  }
+
   // Live YAML preview
   const yamlPreview = $derived.by(() => {
     const inv = $wizardStore.inventory;
@@ -464,17 +495,49 @@ content:
           <Button onclick={() => addPreset('ceph-osd-3')}>+ Ceph OSD × 3 (data + WAL)</Button>
           <Button onclick={() => addPreset('ceph-rgw-2')}>+ Ceph RGW × 2 (S3)</Button>
         {/if}
+        {#if $wizardStore.inventory.nodes.length > 0}
+          <span class="bulk-divider">|</span>
+          <button class="link-btn" onclick={expandAllNodes} type="button">전체 펼치기</button>
+          <button class="link-btn" onclick={collapseAllNodes} type="button">전체 접기</button>
+        {/if}
       </div>
 
       {#each $wizardStore.inventory.nodes as node, i}
-        <div class="node-row">
-          <div class="node-head">
-            <input class="hostname"
-                   value={node.hostname}
-                   placeholder="hostname"
-                   oninput={(e) => updateNode(i, { hostname: (e.target as HTMLInputElement).value })} />
-            <Button variant="ghost" onclick={() => removeNode(i)}>✕</Button>
+        <div class="node-row" class:collapsed={!nodeExpanded[i]}>
+          <div class="node-head-bar"
+               role="button"
+               tabindex="0"
+               onclick={(e) => { if ((e.target as HTMLElement).closest('input,button,select,label')) return; toggleNode(i); }}
+               onkeydown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && !(e.target as HTMLElement).closest('input,button,select,label')) { e.preventDefault(); toggleNode(i); } }}>
+            <span class="caret">{nodeExpanded[i] ? '▼' : '▶'}</span>
+
+            {#if nodeExpanded[i]}
+              <input class="hostname"
+                     value={node.hostname}
+                     placeholder="hostname"
+                     oninput={(e) => updateNode(i, { hostname: (e.target as HTMLInputElement).value })} />
+            {:else}
+              <span class="hostname-display">{node.hostname || '(unnamed)'}</span>
+              <span class="row-ip">{node.ip || '— no ip —'}</span>
+              <div class="row-roles">
+                {#each node.roles as r}<span class="row-role">{r}</span>{/each}
+                {#if node.roles.length === 0}<span class="row-role muted-role">no roles</span>{/if}
+              </div>
+              <span class="row-spec">
+                {node.os} · {node.cpu ?? '?'}c/{node.memory_gb ?? '?'}G/{node.disk_gb ?? '?'}G
+              </span>
+              {#if node.datastore}<span class="row-ds">{node.datastore}</span>{/if}
+              {#if rowIssues(node).length > 0}
+                <span class="row-issues">⚠ {rowIssues(node).join(', ')}</span>
+              {/if}
+            {/if}
+
+            <span class="row-actions">
+              <Button variant="ghost" onclick={() => removeNode(i)}>✕</Button>
+            </span>
           </div>
+
+          {#if nodeExpanded[i]}
           <div class="grid-3">
             <Field label="IP" required>
               <input value={node.ip}
@@ -617,11 +680,12 @@ content:
               {/if}
             </div>
           {/if}
+          {/if}
         </div>
       {/each}
 
       <div class="add-row">
-        <Button variant="primary" onclick={() => addNode()}>+ {$_('step4.addNode')}</Button>
+        <Button variant="primary" onclick={addNodeManual}>+ {$_('step4.addNode')}</Button>
       </div>
     </Section>
 
@@ -660,13 +724,58 @@ content:
   .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
   .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; }
 
-  .node-row { padding: 0.75rem; background: #0f0f12; border: 1px solid #2a2a30;
-              border-radius: 6px; margin-bottom: 0.6rem; }
-  .node-head { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; }
+  .node-row { background: #0f0f12; border: 1px solid #2a2a30;
+              border-radius: 6px; margin-bottom: 0.4rem;
+              transition: border-color 0.1s; }
+  .node-row:not(.collapsed) { border-color: #3b82f6; padding-bottom: 0.75rem; }
+
+  .node-head-bar { display: flex; gap: 0.6rem; align-items: center;
+                   padding: 0.55rem 0.75rem;
+                   cursor: pointer; user-select: none;
+                   background: transparent; border: none; outline: none;
+                   text-align: left; font-family: inherit; color: inherit;
+                   width: 100%; box-sizing: border-box; }
+  .node-head-bar:hover { background: #1a1a1f; }
+  .node-row:not(.collapsed) .node-head-bar { border-bottom: 1px solid #1e3a8a;
+                                              margin-bottom: 0.5rem; }
+  .caret { color: #71717a; font-size: 0.75rem; flex-shrink: 0;
+           width: 0.9rem; text-align: center; }
+  .node-row:not(.collapsed) .caret { color: #60a5fa; }
+
+  .hostname-display { font-size: 0.92rem; font-weight: 500; color: #e4e4e7;
+                      flex-shrink: 0; min-width: 9rem; }
+  .row-ip { color: #93c5fd; font-family: ui-monospace, monospace;
+            font-size: 0.78rem; flex-shrink: 0; min-width: 8rem; }
+  .row-roles { display: flex; gap: 0.25rem; flex-wrap: wrap; flex-shrink: 0; }
+  .row-role { display: inline-block; padding: 0.05rem 0.4rem; border-radius: 999px;
+              background: #1e293b; border: 1px solid #3b82f6; color: #93c5fd;
+              font-size: 0.68rem; font-family: ui-monospace, monospace;
+              line-height: 1.3; }
+  .row-role.muted-role { background: #27272a; border-color: #52525b; color: #71717a; }
+  .row-spec { color: #a1a1aa; font-size: 0.75rem; font-family: ui-monospace, monospace;
+              flex-shrink: 0; }
+  .row-ds { color: #fbbf24; font-size: 0.75rem; font-family: ui-monospace, monospace;
+            background: #1a1410; padding: 0.05rem 0.4rem; border-radius: 3px;
+            flex-shrink: 0; }
+  .row-issues { color: #fca5a5; font-size: 0.75rem; flex-shrink: 0;
+                background: #7f1d1d40; padding: 0.05rem 0.4rem; border-radius: 3px; }
+  .row-actions { margin-left: auto; flex-shrink: 0; }
+
   .hostname { flex: 1; background: #1b1b1f; color: #e4e4e7; border: 1px solid #3f3f46;
               border-radius: 5px; padding: 0.4rem 0.6rem; font-size: 0.9rem; font-weight: 500;
               font-family: inherit; outline: none; }
   .hostname:focus { border-color: #60a5fa; }
+
+  .bulk-divider { color: #3f3f46; margin: 0 0.25rem; }
+  .link-btn { background: none; border: none; color: #93c5fd; cursor: pointer;
+              font-size: 0.78rem; padding: 0.3rem 0.5rem; font-family: inherit;
+              border-radius: 3px; }
+  .link-btn:hover { background: #1e293b; }
+
+  .node-row:not(.collapsed) .grid-3,
+  .node-row:not(.collapsed) .grid-2 { padding: 0 0.75rem; }
+  .node-row:not(.collapsed) > :global(label),
+  .node-row:not(.collapsed) > .osd-section { margin: 0 0.75rem; }
 
   .roles { display: flex; flex-wrap: wrap; gap: 0.35rem; }
   .role-chip { display: flex; gap: 0.3rem; align-items: center; padding: 0.2rem 0.55rem;
