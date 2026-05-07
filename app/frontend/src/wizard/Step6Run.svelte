@@ -17,6 +17,7 @@
 
   let lines = $state<string[]>([]);
   let stage = $state<string>('pending');
+  let skipped = $state<Record<string, string>>({});   // stage → reason
   let serverURL = $state('');
   let firewallHint = $state('');
   let starting = $state(false);
@@ -34,7 +35,13 @@
     });
     const off3 = r?.EventsOn?.('run:server-listening', (d: { url: string }) => { serverURL = d.url; });
     const off4 = r?.EventsOn?.('run:firewall-hint', (d: { note: string }) => { firewallHint = d.note; });
-    return () => { off1?.(); off2?.(); off3?.(); off4?.(); };
+    // Topology gating: orchestrator emits run:stage-skipped before the loop
+    // starts so we can mark stages as intentionally skipped (vs failed).
+    const off5 = r?.EventsOn?.('run:stage-skipped', (s: string, reason: string) => {
+      skipped = { ...skipped, [s]: reason };
+      lines = [...lines, `[skip] ${s} — ${reason}`];
+    });
+    return () => { off1?.(); off2?.(); off3?.(); off4?.(); off5?.(); };
   });
 
   async function start() {
@@ -49,6 +56,7 @@
   }
 
   function stageTone(s: string, current: string): 'neutral' | 'success' | 'info' | 'danger' {
+    if (skipped[s]) return 'neutral';            // topology said this stage doesn't run
     const idx = stages.indexOf(s as any);
     const cur = stages.indexOf(current as any);
     if (s === 'failed') return 'danger';
@@ -76,7 +84,7 @@
 <Section title={$_('step6.stage')}>
   <div class="stage-flow">
     {#each stages as s}
-      <div class="stage" class:active={s === stage}>
+      <div class="stage" class:active={s === stage} class:skipped={!!skipped[s]} title={skipped[s] ?? ''}>
         <Badge tone={stageTone(s, stage)}>
           {$_('step6.stages.' + s)}
         </Badge>
@@ -109,6 +117,7 @@
   .stage-flow { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
   .stage { transition: transform 0.1s; }
   .stage.active { transform: scale(1.05); }
+  .stage.skipped { opacity: 0.4; text-decoration: line-through; }
   .row { display: flex; gap: 0.75rem; margin-top: 0.75rem; }
   .log { background: #0a0a0c; border: 1px solid #2a2a30; padding: 0.75rem;
          border-radius: 5px; font-family: ui-monospace, monospace; font-size: 0.78rem;

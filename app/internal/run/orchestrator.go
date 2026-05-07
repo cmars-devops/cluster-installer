@@ -57,7 +57,8 @@ type Orchestrator struct {
 }
 
 // Apply runs the whole pipeline. Cancelling ctx tears down the HTTP server
-// and aborts at the next stage boundary.
+// and aborts at the next stage boundary. The exact stage list depends on
+// cluster.topology — see pipelineStages.
 func (o *Orchestrator) Apply(ctx context.Context) error {
 	defer func() {
 		if o.httpSrv != nil {
@@ -66,23 +67,7 @@ func (o *Orchestrator) Apply(ctx context.Context) error {
 		}
 	}()
 
-	stages := []struct {
-		name state.Stage
-		fn   func(context.Context) error
-	}{
-		{state.StageSeedISO, o.startHTTPAndRenderSeeds},
-		{state.StageTFInit, o.terraformInit},
-		{state.StageTFPlan, o.terraformPlan},
-		{state.StageTFApply, o.terraformApply},
-		{state.StageWaitSSH, o.waitSSH},
-		{state.StagePreflight, func(c context.Context) error { return o.runPlaybook(c, "playbooks/00-preflight.yml") }},
-		{state.StageCeph, func(c context.Context) error { return o.runPlaybook(c, "playbooks/10-ceph-cephadm.yml") }},
-		{state.StageK8s, o.runK8sPlaybook},
-		{state.StageCSI, func(c context.Context) error { return o.runPlaybook(c, "playbooks/30-csi-ceph.yml") }},
-		{state.StageAddons, func(c context.Context) error { return o.runPlaybook(c, "playbooks/40-addons.yml") }},
-	}
-
-	for _, st := range stages {
+	for _, st := range o.pipelineStages() {
 		if err := ctx.Err(); err != nil {
 			return o.fail(st.name, err)
 		}
@@ -94,6 +79,73 @@ func (o *Orchestrator) Apply(ctx context.Context) error {
 
 	o.markStage(state.StageCompleted)
 	return nil
+}
+
+// stage couples a state.Stage label with its execution function.
+type stage struct {
+	name state.Stage
+	fn   func(context.Context) error
+}
+
+// pipelineStages tailors the stage list to cluster.topology:
+//
+//	combined  (default): all stages — seeds → TF → SSH → preflight → ceph → k8s → csi → addons
+//	ceph-only:           seeds → TF → SSH → preflight → ceph                 (no k8s, no csi, no addons)
+//	k8s-only:            seeds → TF → SSH → preflight        → k8s → [csi]* → addons
+//	                     *csi runs only when cluster.external_ceph is configured;
+//	                     otherwise the cluster has no Ceph and CSI would have no
+//	                     backend to bind.
+//
+// Skipped stages emit "run:stage-skipped" so the UI can render a strikethrough
+// instead of leaving the user wondering whether the stage failed silently.
+func (o *Orchestrator) pipelineStages() []stage {
+	topo := o.Inventory.Cluster.Topology
+	if topo == "" {
+		topo = "combined" // back-compat: pre-topology inventories run the full pipeline
+	}
+
+	common := []stage{
+		{state.StageSeedISO, o.startHTTPAndRenderSeeds},
+		{state.StageTFInit, o.terraformInit},
+		{state.StageTFPlan, o.terraformPlan},
+		{state.StageTFApply, o.terraformApply},
+		{state.StageWaitSSH, o.waitSSH},
+		{state.StagePreflight, func(c context.Context) error { return o.runPlaybook(c, "playbooks/00-preflight.yml") }},
+	}
+
+	cephStage := stage{state.StageCeph, func(c context.Context) error { return o.runPlaybook(c, "playbooks/10-ceph-cephadm.yml") }}
+	k8sStage := stage{state.StageK8s, o.runK8sPlaybook}
+	csiStage := stage{state.StageCSI, func(c context.Context) error { return o.runPlaybook(c, "playbooks/30-csi-ceph.yml") }}
+	addonsStage := stage{state.StageAddons, func(c context.Context) error { return o.runPlaybook(c, "playbooks/40-addons.yml") }}
+
+	switch topo {
+	case "ceph-only":
+		o.skip(state.StageK8s, "topology=ceph-only")
+		o.skip(state.StageCSI, "topology=ceph-only")
+		o.skip(state.StageAddons, "topology=ceph-only")
+		return append(common, cephStage)
+
+	case "k8s-only":
+		o.skip(state.StageCeph, "topology=k8s-only")
+		out := append(common, k8sStage)
+		if o.Inventory.Cluster.ExternalCeph != nil {
+			out = append(out, csiStage)
+		} else {
+			o.skip(state.StageCSI, "topology=k8s-only without external_ceph")
+		}
+		return append(out, addonsStage)
+
+	default: // "combined"
+		return append(common, cephStage, k8sStage, csiStage, addonsStage)
+	}
+}
+
+// skip records that a stage is intentionally not part of this pipeline. The
+// UI can use these events to dim/strike skipped stages on the run-progress
+// view, so users don't have to guess why "ceph" never appeared in the log.
+func (o *Orchestrator) skip(s state.Stage, reason string) {
+	o.emit("run:stage-skipped", string(s), reason)
+	o.Log.Info("orchestrator.skip", "stage", string(s), "reason", reason)
 }
 
 // startHTTPAndRenderSeeds picks the host IP, starts the HTTP server, then
