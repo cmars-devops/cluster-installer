@@ -37,12 +37,28 @@ type NetworkSpec struct {
 }
 
 type TargetSpec struct {
-	Type        string `yaml:"type" json:"type"` // libvirt | proxmox
-	Endpoint    string `yaml:"endpoint" json:"endpoint"`
-	SSHKey      string `yaml:"ssh_key,omitempty" json:"ssh_key,omitempty"`
-	Username    string `yaml:"username,omitempty" json:"username,omitempty"`
-	APIToken    string `yaml:"api_token,omitempty" json:"api_token,omitempty"`
+	Type     string `yaml:"type" json:"type"` // libvirt | proxmox | esxi
+	Endpoint string `yaml:"endpoint" json:"endpoint"`
+	Username string `yaml:"username,omitempty" json:"username,omitempty"` // default "root"
+
+	// libvirt: required path to SSH private key.
+	// esxi:    optional alternative to Password.
+	SSHKey string `yaml:"ssh_key,omitempty" json:"ssh_key,omitempty"`
+
+	// proxmox: required, format "user@pam!tokenid=secret".
+	APIToken string `yaml:"api_token,omitempty" json:"api_token,omitempty"`
+
+	// esxi: vSphere API + SSH share a single root password by ESXi convention.
+	// Never persist in plaintext outside the per-user %LOCALAPPDATA% tree.
+	Password string `yaml:"password,omitempty" json:"password,omitempty"`
+
+	// ESXi-specific placement:
+	Datastore    string `yaml:"datastore,omitempty" json:"datastore,omitempty"`
+	ISODatastore string `yaml:"iso_datastore,omitempty" json:"iso_datastore,omitempty"`
+	Network      string `yaml:"network,omitempty" json:"network,omitempty"`
+
 	TLSInsecure bool   `yaml:"tls_insecure,omitempty" json:"tls_insecure,omitempty"`
+	AdvertiseIP string `yaml:"advertise_ip,omitempty" json:"advertise_ip,omitempty"`
 }
 
 type NodeSpec struct {

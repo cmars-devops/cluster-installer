@@ -51,6 +51,14 @@ func (o *Orchestrator) renderTFVars() (string, error) {
 		return out, o.writeLibvirtTFVars(out)
 	case "proxmox":
 		return out, o.writeProxmoxTFVars(out)
+	case "esxi":
+		// ESXi backend (govmomi) is a v2 milestone. The inventory is
+		// captured + saved, but Apply will not run terraform yet — the
+		// orchestrator returns a friendly error here pointing at the docs.
+		return "", fmt.Errorf(
+			"ESXi target captured but not yet supported by the run engine — " +
+				"see docs/phase-1-open-items.md §3 for the implementation plan " +
+				"(govmomi adapter + per-cluster ISO remaster)")
 	default:
 		return "", fmt.Errorf("unknown target type %q", o.Inventory.Target.Type)
 	}

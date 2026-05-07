@@ -35,11 +35,15 @@ export interface Inventory {
     cluster_prefix_len: number;
   };
   target: {
-    type: 'libvirt' | 'proxmox';
+    type: 'libvirt' | 'proxmox' | 'esxi';
     endpoint: string;
-    ssh_key: string;
-    username: string;
-    api_token: string;
+    username: string;          // default 'root'
+    ssh_key: string;           // libvirt always; ESXi optional
+    api_token: string;         // proxmox
+    password: string;          // ESXi root password (used for vSphere API + SSH)
+    datastore: string;         // ESXi datastore for VM disks/seed ISOs
+    iso_datastore: string;     // ESXi datastore for ISO uploads (often same)
+    network: string;           // ESXi port group name
     tls_insecure: boolean;
     advertise_ip: string;
   };
@@ -80,9 +84,13 @@ const defaultInventory: Inventory = {
   target: {
     type: 'libvirt',
     endpoint: '',
-    ssh_key: '',
     username: 'root',
+    ssh_key: '',
     api_token: '',
+    password: '',
+    datastore: '',
+    iso_datastore: '',
+    network: 'VM Network',
     tls_insecure: false,
     advertise_ip: ''
   },
