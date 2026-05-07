@@ -159,6 +159,12 @@ the Wails app context.
   composes the stage list from `cluster.topology` (combined / ceph-only /
   k8s-only). Skipped stages emit `run:stage-skipped` for Step 6 to dim and
   strike them in the flow strip.
+- **MAC pre-allocation** (closes §5) — `Orchestrator.Apply` derives a
+  deterministic locally-administered MAC per node from
+  `sha256(cluster + "/" + hostname)` using the right OUI for each target
+  (libvirt 52:54:00, Proxmox BC:24:11, ESXi 00:50:56 with the high byte
+  masked to ≤0x3F). The resulting `PrimaryMAC` is persisted to `run.json`
+  before stages start, so seed renders + tfvars see the same address.
 
 ---
 
