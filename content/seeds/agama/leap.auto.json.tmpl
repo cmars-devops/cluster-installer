@@ -1,0 +1,70 @@
+{
+  "_comment": "Agama unattended-install profile for openSUSE Leap. Rendered per node by the Windows installer (Go text/template). Reference: https://github.com/openSUSE/agama and https://documentation.suse.com/sle-micro/. Picked up via kernel cmdline 'agama.auto=device://OEMDRV/agama/profile.json' or 'agama.auto=URL' when the installer hosts the profile over HTTP.",
+  "product": {
+    "id": "Leap"
+  },
+  "localization": {
+    "language": "en_US.UTF-8",
+    "keyboard": "us",
+    "timezone": "{{ .Cluster.Timezone | default "Asia/Seoul" }}"
+  },
+  "root": {
+    "sshPublicKey": {{ printf "%q" (index .Node.SSHAuthorizedKeys 0) }},
+    "password": "!"
+  },
+  "user": {
+    "fullName": "Cluster Operator",
+    "userName": "operator",
+    "password": "!",
+    "autologin": false
+  },
+  "network": {
+    "connections": [
+      {
+        "id": "{{ .Node.NetworkInterface }}",
+        "interface": "{{ .Node.NetworkInterface }}",
+        "method4": "manual",
+        "addresses": ["{{ .Node.IP }}/{{ .Network.PrefixLen }}"],
+        "gateway4": "{{ .Network.Gateway }}",
+        "nameservers": ["{{ .Network.DNS }}"],
+        "autoconnect": true
+      }
+    ]
+  },
+  "hostname": {
+    "static": "{{ .Node.Hostname }}",
+    "transient": "{{ .Node.Hostname }}"
+  },
+  "storage": {
+    "drives": [
+      {
+        "search": "*",
+        "partitions": [
+          { "search": "*", "delete": true },
+          { "filesystem": { "type": "btrfs", "path": "/" }, "size": "min" }
+        ]
+      }
+    ]
+  },
+  "software": {
+    "products": ["Leap"],
+    "patterns": ["base", "minimal_base", "basesystem"],
+    "packages": [
+      "chrony",
+      "open-iscsi",
+      "python3",
+      "openssh",
+      "sudo"{{ if .Node.NeedsCeph }},
+      "lvm2",
+      "podman"{{ end }}
+    ]
+  },
+  "scripts": {
+    "post": [
+      {
+        "name": "finalize",
+        "body": "#!/bin/bash\nset -e\nhostnamectl set-hostname {{ .Node.Hostname }}\nsystemctl enable sshd chronyd\nfirewall-cmd --permanent --zone=trusted --add-source={{ .Network.PodCIDR }} || true\nfirewall-cmd --permanent --zone=trusted --add-source={{ .Network.ServiceCIDR }} || true\nfirewall-cmd --reload || true\n"
+      }
+    ]
+  }
+}

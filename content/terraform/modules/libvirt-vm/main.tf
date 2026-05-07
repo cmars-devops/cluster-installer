@@ -55,7 +55,7 @@ resource "libvirt_domain" "vm" {
     content { volume_id = disk.value.id }
   }
 
-  # Seed ISO carrying AutoYaST or Ignition+Combustion config drive.
+  # Seed ISO carrying Agama or Ignition+Combustion config drive.
   disk { file = var.seed_iso_path }
 
   console {

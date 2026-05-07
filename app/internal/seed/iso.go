@@ -15,8 +15,8 @@ import (
 type SeedFormat string
 
 const (
-	SeedAutoYaST  SeedFormat = "autoyast"   // openSUSE Leap / Tumbleweed
-	SeedIgnition  SeedFormat = "ignition"   // openSUSE MicroOS / SLE Micro
+	SeedAgama    SeedFormat = "agama"     // openSUSE Leap / Tumbleweed (Agama installer)
+	SeedIgnition SeedFormat = "ignition"  // openSUSE MicroOS / SLE Micro
 )
 
 // File is one entry to write into the seed ISO.
@@ -27,14 +27,17 @@ type File struct {
 
 // Build packs the given files into a small ISO9660 image at outPath. The
 // volume label is chosen per-format so the OS installer auto-discovers it
-// (OEMDRV for AutoYaST, ignition for Combustion+Ignition).
+// (OEMDRV for Agama, ignition for Combustion+Ignition).
 func Build(outPath string, format SeedFormat, files []File) error {
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 		return err
 	}
 	var label string
 	switch format {
-	case SeedAutoYaST:
+	case SeedAgama:
+		// Agama auto-pickup convention: file at /agama/profile.json on a
+		// disk labeled OEMDRV; referenced from kernel cmdline as
+		// agama.auto=device://OEMDRV/agama/profile.json
 		label = "OEMDRV"
 	case SeedIgnition:
 		label = "ignition"

@@ -54,7 +54,7 @@ inventory schema instead.
 ## Why two `.tmpl` flavors?
 
 - Files rendered by the **installer** (Go) → `text/template` → `{{ .Field }}`
-  (e.g. AutoYaST, Combustion, Ignition, hosts.yml).
+  (e.g. Agama, Combustion, Ignition, hosts.yml).
 - Files rendered by **Ansible** (Jinja2) → `{{ var }}` (Helm values).
 
 Both end in `.tmpl` to keep IDEs from imposing strict syntax checks. The

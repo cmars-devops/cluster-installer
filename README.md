@@ -14,7 +14,7 @@ for the full design.
 ```
 .
 ├── app/        # Wails (Go + Svelte) GUI installer that compiles to one .exe
-└── content/    # Terraform, Ansible, Helm, AutoYaST/Combustion templates
+└── content/    # Terraform, Ansible, Helm, Agama/Combustion templates
                 # (will be split into its own GitHub repo for v0.1)
 ```
 

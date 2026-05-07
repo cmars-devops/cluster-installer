@@ -15,7 +15,7 @@ modifies only `%LOCALAPPDATA%\cluster-installer\`.
 
 - The wizard never generates a private key on the user's behalf in v0.1 — the
   user supplies a path to an existing private key.
-- The corresponding public key is embedded into AutoYaST/Ignition seeds so
+- The corresponding public key is embedded into Agama/Ignition seeds so
   every freshly-booted node trusts it.
 - Host keys are accepted blindly on first contact (`InsecureIgnoreHostKey`)
   because the nodes are brand-new and have no out-of-band trust anchor. This is

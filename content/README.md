@@ -1,6 +1,6 @@
 # cluster-installer-content
 
-Versioned IaC content (Terraform / Ansible / Helm / AutoYaST / Combustion+Ignition)
+Versioned IaC content (Terraform / Ansible / Helm / Agama / Combustion+Ignition)
 consumed at runtime by the [cluster-installer](https://github.com/triangles-co-kr/cluster-installer) Windows GUI.
 
 The installer pulls a specific git tag of this repo via `go-git`. The exe is thin;
@@ -17,7 +17,7 @@ all installation logic lives here.
 |------|---------|
 | `schema/inventory.schema.json` | Authoritative JSON Schema for the wizard's output YAML |
 | `images.yaml` | OS ISO catalog (URL + checksum + autoinst mode) |
-| `seeds/autoyast/` | Jinja2 AutoYaST profiles (openSUSE Leap / Tumbleweed) |
+| `seeds/agama/` | Agama unattended-install JSON profiles (openSUSE Leap / Tumbleweed) |
 | `seeds/ignition/` | Combustion + Ignition templates (openSUSE MicroOS / SLE Micro) |
 | `terraform/modules/` | Reusable provisioner modules (libvirt-vm, proxmox-vm) |
 | `terraform/stacks/` | Top-level stacks the installer invokes |

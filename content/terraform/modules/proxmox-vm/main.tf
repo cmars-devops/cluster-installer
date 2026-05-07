@@ -38,7 +38,7 @@ resource "proxmox_virtual_environment_vm" "vm" {
 
   cdrom { file_id = var.base_iso_id }
 
-  # Seed ISO carrying AutoYaST/Combustion config-drive.
+  # Seed ISO carrying Agama/Combustion config-drive.
   disk {
     datastore_id = var.iso_datastore
     interface    = "ide2"

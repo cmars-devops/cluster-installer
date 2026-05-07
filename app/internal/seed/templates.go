@@ -1,4 +1,4 @@
-// Package seed renders per-node first-boot configs (AutoYaST / Combustion+
+// Package seed renders per-node first-boot configs (Agama / Combustion+
 // Ignition) and packs them into a tiny ISO9660 image with the right volume
 // label, ready to attach to the VM as a second CD-ROM.
 package seed

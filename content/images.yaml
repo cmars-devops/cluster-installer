@@ -11,14 +11,14 @@ images:
     family: leap
     version: "15.6"
     arch: x86_64
-    type: netinstall
+    type: agama-live
     url: https://download.opensuse.org/distribution/leap/15.6/iso/openSUSE-Leap-15.6-NET-x86_64-Media.iso
     checksum_url: https://download.opensuse.org/distribution/leap/15.6/iso/openSUSE-Leap-15.6-NET-x86_64-Media.iso.sha256
-    seed_format: autoyast
+    seed_format: agama
   tumbleweed-net:
     family: tumbleweed
     arch: x86_64
-    type: netinstall
+    type: agama-live
     url: https://download.opensuse.org/tumbleweed/iso/openSUSE-Tumbleweed-NET-x86_64-Current.iso
     checksum_url: https://download.opensuse.org/tumbleweed/iso/openSUSE-Tumbleweed-NET-x86_64-Current.iso.sha256
-    seed_format: autoyast
+    seed_format: agama
