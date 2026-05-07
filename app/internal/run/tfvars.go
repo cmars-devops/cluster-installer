@@ -77,7 +77,7 @@ func (o *Orchestrator) writeLibvirtTFVars(path string) error {
 			MemoryMB:     defaultInt(n.MemoryGB*1024, 4096),
 			VCPU:         defaultInt(n.CPU, 2),
 			DiskGB:       defaultInt(n.DiskGB, 40),
-			ExtraDisksGB: extraDisksFor(n),
+			ExtraDisksGB: extraDisksFor(n, o.Inventory.Ceph),
 			MAC:          n.PrimaryMAC,
 			Pool:         n.Datastore,                  // libvirt pool override (per-node) — empty = stack default
 			DiskFormat:   libvirtFormatFor(n.DiskProvisioning),
@@ -127,7 +127,7 @@ func (o *Orchestrator) writeProxmoxTFVars(path string) error {
 			MemoryMB:     defaultInt(n.MemoryGB*1024, 4096),
 			VCPU:         defaultInt(n.CPU, 2),
 			DiskGB:       defaultInt(n.DiskGB, 40),
-			ExtraDisksGB: extraDisksFor(n),
+			ExtraDisksGB: extraDisksFor(n, o.Inventory.Ceph),
 			MAC:          n.PrimaryMAC,
 			DatastoreID:  n.Datastore, // Proxmox storage override (per-node)
 			FileFormat:   fileFormat,
@@ -187,13 +187,57 @@ func proxmoxFormatFor(p string) (format string, discard bool) {
 	}
 }
 
-func extraDisksFor(n inventory.NodeSpec) []int {
+// extraDisksFor returns per-node additional virtual disk sizes (GB) the
+// Terraform stack should provision. COUNT comes from the OSD device path
+// lists on the node; SIZE comes from cluster-level Ceph defaults. Order:
+// data disks first, then DB, then WAL.
+//
+// Example with cluster defaults data=2048, db=100, wal=0 and a node with
+// data_devices=[/dev/sdb,/dev/sdc], db_devices=[/dev/sdd]:
+//   → 3 extra disks: [2048, 2048, 100]
+//
+// Backward compat: if data/db/wal lists are empty but legacy
+// storage_devices is set, treat the first entry as data and the rest
+// as DB devices, sized from cluster defaults.
+func extraDisksFor(n inventory.NodeSpec, c inventory.CephSpec) []int {
 	if !n.HasRole("ceph-osd") {
 		return []int{}
 	}
-	// Default OSD layout from P:\K3s@IDC: 2TB data + 100GB WAL/DB.
-	// Operators override via inventory.nodes[].storage_devices in v0.2.
-	return []int{2048, 100}
+
+	dataPaths := n.DataDevices
+	dbPaths := n.DBDevices
+	walPaths := n.WALDevices
+
+	if len(dataPaths) == 0 && len(n.StorageDevices) > 0 {
+		dataPaths = n.StorageDevices[:1]
+		if len(n.StorageDevices) > 1 {
+			dbPaths = n.StorageDevices[1:]
+		}
+	}
+
+	dataSize := c.OSDDataDiskSizeGB
+	if dataSize == 0 {
+		dataSize = 2048
+	}
+	dbSize := c.OSDDBDiskSizeGB
+	if dbSize == 0 {
+		dbSize = 100
+	}
+	walSize := c.OSDWALDiskSizeGB
+
+	out := make([]int, 0, len(dataPaths)+len(dbPaths)+len(walPaths))
+	for range dataPaths {
+		out = append(out, dataSize)
+	}
+	for range dbPaths {
+		out = append(out, dbSize)
+	}
+	if walSize > 0 {
+		for range walPaths {
+			out = append(out, walSize)
+		}
+	}
+	return out
 }
 
 func baseVolumeIDFor(inv inventory.Inventory) string {

@@ -511,7 +511,29 @@ content:
           </div>
         </Field>
 
-        <div class="osd-defaults-head">OSD 기본값 (모든 OSD 노드에 적용, 노드별 override 가능)</div>
+        <div class="osd-defaults-head">OSD 기본값 (모든 OSD 노드에 적용)</div>
+
+        <div class="grid-3">
+          <Field label="OSD Data 디스크 크기 (GB)"
+                 hint="각 OSD VM에 할당될 데이터 디스크 크기. 디스크 개수 = 노드의 'Data devices' 항목 수. IDC 기본값 2 TB.">
+            <input type="number" min="10"
+                   value={$wizardStore.inventory.ceph.osd_data_disk_size_gb ?? 2048}
+                   oninput={(e) => updateCeph({ osd_data_disk_size_gb: +(e.target as HTMLInputElement).value || 0 })} />
+          </Field>
+          <Field label="OSD DB 디스크 크기 (GB)"
+                 hint="BlueStore DB 디스크 크기. Ceph 권장: data의 1-4%, 최소 30 GiB. 0 = data device에 함께 저장. IDC 기본 100 GB (2 TB data 기준).">
+            <input type="number" min="0"
+                   value={$wizardStore.inventory.ceph.osd_db_disk_size_gb ?? 100}
+                   oninput={(e) => updateCeph({ osd_db_disk_size_gb: +(e.target as HTMLInputElement).value || 0 })} />
+          </Field>
+          <Field label="OSD WAL 디스크 크기 (GB)"
+                 hint="별도 WAL 디스크 크기. 거의 안 씀 — 0 = WAL을 DB device에 자동 포함.">
+            <input type="number" min="0"
+                   value={$wizardStore.inventory.ceph.osd_wal_disk_size_gb ?? 0}
+                   oninput={(e) => updateCeph({ osd_wal_disk_size_gb: +(e.target as HTMLInputElement).value || 0 })} />
+          </Field>
+        </div>
+
         <div class="grid-3">
           <Field label="복제 수 (replica)"
                  hint="RBD/CephFS 풀의 기본 replica. 3 = 표준 (host 2개 손실 OK), 2 = 랩 전용, 1 = 단일 노드만.">
@@ -743,21 +765,27 @@ content:
 
               <div class="grid-2">
                 <Field label="Data devices (OSD 데이터)"
-                       hint="cephadm이 BlueStore OSD data로 사용할 블록 디바이스. 일반적으로 HDD. 예: /dev/sdb, /dev/sdc"
+                       hint={`cephadm이 BlueStore OSD data로 사용할 블록 디바이스. 디바이스 개수만큼 ${$wizardStore.inventory.ceph.osd_data_disk_size_gb ?? 2048} GB 디스크가 VM에 할당됩니다 (Ceph 구성에서 변경).`}
                        error={dataDevicesOf(node).length === 0 ? '최소 1개 필요 — cephadm bootstrap이 OSD를 만들지 못합니다' : ''}
                        required>
                   <input value={devicesText(dataDevicesOf(node))}
                          oninput={(e) => setDataDevices(i, (e.target as HTMLInputElement).value)}
                          placeholder="/dev/sdb, /dev/sdc" />
+                  {#if dataDevicesOf(node).length > 0}
+                    <span class="alloc-hint">→ {dataDevicesOf(node).length} disk × {$wizardStore.inventory.ceph.osd_data_disk_size_gb ?? 2048} GB</span>
+                  {/if}
                 </Field>
 
                 <Field label="DB/WAL devices (BlueStore 메타)"
                        hint={(node.device_class ?? 'auto') === 'hdd'
-                         ? '⚡ HDD에 강력 권장 — SSD/NVMe 경로 입력 시 OSD throughput 4-8× 개선 (BlueStore rocksdb를 SSD로 분리). 비워두면 data device 자체에 함께 저장.'
-                         : '선택 — SSD/NVMe 경로 입력 시 BlueStore DB를 분리. 비워두면 data device에 함께 저장.'}>
+                         ? `⚡ HDD에 강력 권장 — 입력 시 ${$wizardStore.inventory.ceph.osd_db_disk_size_gb ?? 100} GB SSD가 디바이스 개수만큼 할당되어 throughput 4-8× 개선. 비워두면 data device에 함께 저장.`
+                         : `선택 — 입력 시 ${$wizardStore.inventory.ceph.osd_db_disk_size_gb ?? 100} GB 디스크가 디바이스 개수만큼 할당. 비워두면 data device에 함께 저장.`}>
                   <input value={devicesText(node.db_devices)}
                          oninput={(e) => setDBDevices(i, (e.target as HTMLInputElement).value)}
-                         placeholder="/dev/nvme0n1" />
+                         placeholder="/dev/sdc" />
+                  {#if (node.db_devices ?? []).length > 0}
+                    <span class="alloc-hint">→ {(node.db_devices ?? []).length} disk × {$wizardStore.inventory.ceph.osd_db_disk_size_gb ?? 100} GB</span>
+                  {/if}
                 </Field>
               </div>
 
@@ -985,6 +1013,9 @@ content:
              border: 1px solid #3f3f46; border-radius: 5px;
              font-size: 0.85rem; cursor: pointer; }
   .enc-row input { accent-color: #f59e0b; }
+
+  .alloc-hint { display: block; font-size: 0.7rem; color: #fbbf24;
+                font-family: ui-monospace, monospace; margin-top: 0.2rem; }
 
   .osd-defaults-head { font-size: 0.75rem; color: #f59e0b; font-weight: 600;
                        text-transform: uppercase; letter-spacing: 0.05em;

@@ -183,6 +183,14 @@ type CephSpec struct {
 	// Defaults applied when per-node OSD fields are unset.
 	DefaultOSDsPerDevice int  `yaml:"default_osds_per_device,omitempty" json:"default_osds_per_device,omitempty"`
 	DefaultEncrypted     bool `yaml:"default_encrypted,omitempty"        json:"default_encrypted,omitempty"`
+
+	// Per-VM virtual-disk sizes for OSDs. Applied uniformly across nodes;
+	// the disk COUNT per node equals the number of paths in the matching
+	// device list (e.g. data_devices=[/dev/sdb,/dev/sdc] → 2 disks @
+	// OSDDataDiskSizeGB each). 0 = don't allocate disks of that purpose.
+	OSDDataDiskSizeGB int `yaml:"osd_data_disk_size_gb,omitempty" json:"osd_data_disk_size_gb,omitempty"`
+	OSDDBDiskSizeGB   int `yaml:"osd_db_disk_size_gb,omitempty"   json:"osd_db_disk_size_gb,omitempty"`
+	OSDWALDiskSizeGB  int `yaml:"osd_wal_disk_size_gb,omitempty"  json:"osd_wal_disk_size_gb,omitempty"`
 }
 
 type AddonsSpec struct {

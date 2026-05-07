@@ -121,6 +121,21 @@ export interface Inventory {
     default_osds_per_device?: number;
     /** Default dm-crypt encryption for OSDs. */
     default_encrypted?: boolean;
+
+    /** OSD virtual-disk sizes — applied uniformly across all OSD VMs. The
+     *  number of allocated disks per node = the count of paths in the
+     *  matching device list:
+     *
+     *  data_devices: ['/dev/sdb', '/dev/sdc']  →  2 disks × osd_data_disk_size_gb
+     *  db_devices:   ['/dev/sdd']              →  1 disk  × osd_db_disk_size_gb
+     *  wal_devices:  []                         →  0 disks (when WAL co-locates with DB)
+     *
+     *  For a typical HDD setup (IDC default): 2048 GB data + 100 GB DB.
+     *  Ceph BlueStore guidance: DB should be ~1-4% of data size, with a
+     *  minimum of ~30 GiB; 100 GB on a 2 TB HDD is mid-range and safe. */
+    osd_data_disk_size_gb?: number;
+    osd_db_disk_size_gb?: number;
+    osd_wal_disk_size_gb?: number;
   };
   addons: { ingress: 'ingress-nginx' | 'traefik' | 'none'; cert_manager: boolean;
             monitoring: 'kube-prometheus-stack' | 'none'; gitops: 'argocd' | 'flux' | 'none' };
@@ -184,7 +199,10 @@ const defaultInventory: Inventory = {
     replication: 3,
     failure_domain: 'host',
     default_osds_per_device: 1,
-    default_encrypted: false
+    default_encrypted: false,
+    osd_data_disk_size_gb: 2048,
+    osd_db_disk_size_gb: 100,
+    osd_wal_disk_size_gb: 0
   },
   addons: {
     ingress: 'ingress-nginx',
