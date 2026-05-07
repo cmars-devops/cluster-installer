@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"gopkg.in/yaml.v3"
 )
@@ -59,10 +60,19 @@ func LoadCatalog(contentDir string) (Catalog, error) {
 
 // LookupForOS returns the catalog entry that matches the node's OS family.
 // Multiple images may share a family (e.g. leap-15.6 vs leap-16.0); the
-// caller can pin via the optional version string. Empty version picks the
-// first-defined entry — order in images.yaml is the implicit default.
+// caller can pin via the optional version string. With version="" the
+// lookup is deterministic: keys are sorted lexicographically descending,
+// so leap-16.0 wins over leap-15.6 — exactly what semver-y version strings
+// would do anyway. The catalog map's native iteration order is randomised
+// by Go and would otherwise pick a different ISO each run.
 func (c Catalog) LookupForOS(family, version string) (string, Image, bool) {
-	for key, img := range c.Images {
+	keys := make([]string, 0, len(c.Images))
+	for k := range c.Images {
+		keys = append(keys, k)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(keys)))
+	for _, key := range keys {
+		img := c.Images[key]
 		if img.Family != family {
 			continue
 		}
