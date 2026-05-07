@@ -2,10 +2,10 @@
 
 This project lives in two git repositories:
 
-| Repo | Purpose | URL |
-|------|---------|-----|
-| **app** (this repo) | Wails Go + Svelte UI that compiles into the single `cluster-installer.exe`. | <https://github.com/cmars-devops/cluster-installer> |
-| **content** (submodule at `content/`) | Terraform modules, Ansible playbooks, Agama/Combustion seeds, Helm values, image catalog. Pulled by the .exe at runtime via Step 1 "Fetch content". | <https://github.com/cmars-devops/cluster-installer-content> |
+| Repo | Purpose | Primary | Mirror |
+|------|---------|---------|--------|
+| **app** (this repo) | Wails Go + Svelte UI that compiles into the single `cluster-installer.exe`. | [GitHub](https://github.com/cmars-devops/cluster-installer) | [Azure DevOps](https://dev.azure.com/triangles-infrastructure/ClusterInstaller-App/_git/ClusterInstaller-App) |
+| **content** (submodule at `content/`) | Terraform modules, Ansible playbooks, Agama/Combustion seeds, Helm values, image catalog. Pulled by the .exe at runtime via Step 1 "Fetch content". | [GitHub](https://github.com/cmars-devops/cluster-installer-content) | (none) |
 
 The split exists so the .exe stays small and content can be patched
 without rebuilding the binary. The runtime contract: the .exe asks
@@ -14,6 +14,26 @@ GitHub for `content/<tag>` at install time, never bundles it.
 For development, the content repo is mounted as a git submodule at the
 same `content/` path so you can edit both sides in one IDE and keep
 working in one directory.
+
+### Mirror to Azure DevOps
+
+The app repo also lives on Azure DevOps (Triangles internal infra).
+GitHub is the source of truth; Azure is a passive mirror. After a
+fresh clone, set up dual-push so a single `git push origin main`
+updates both:
+
+```bash
+git remote set-url --add --push origin https://github.com/cmars-devops/cluster-installer.git
+git remote set-url --add --push origin https://dev.azure.com/triangles-infrastructure/ClusterInstaller-App/_git/ClusterInstaller-App
+```
+
+Verify with `git remote -v` — `origin (push)` should appear twice.
+A successful push then prints "Everything up-to-date" (or the new
+ref) twice — once per destination.
+
+The content submodule has no Azure mirror; the .gitmodules URL points
+at GitHub, so anyone cloning from Azure still pulls the submodule
+from GitHub. Acceptable because the content repo is public.
 
 ## Cloning
 
