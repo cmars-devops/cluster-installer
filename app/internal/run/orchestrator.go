@@ -207,7 +207,14 @@ func (o *Orchestrator) startHTTPAndRenderSeeds(ctx context.Context) error {
 		"note": "Windows 방화벽이 첫 inbound 연결 시 허용 대화상자를 띄울 수 있습니다 — '액세스 허용'을 클릭하세요.",
 	})
 
-	// 5. Render seed payloads per node.
+	// 5. Materialise OS images into the cache + extract Agama kernel-boot
+	// artefacts into staging/repo/. Skipped entirely if no Leap/Tumbleweed
+	// node is present (MicroOS uses Combustion + the qcow2 base volume).
+	if err := o.ensureAgamaArtefacts(ctx); err != nil {
+		return fmt.Errorf("agama artefacts: %w", err)
+	}
+
+	// 6. Render seed payloads per node.
 	hostsEntries := seed.HostsEntriesFromInventory(o.Inventory)
 	for _, n := range o.Inventory.Nodes {
 		ctx := seed.BuildContext(o.Inventory, n, o.Run.RootPasswordHash, hostsEntries)

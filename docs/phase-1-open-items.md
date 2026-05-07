@@ -173,6 +173,18 @@ the Wails app context.
   cancelled by user"`. Step 6 has a `danger`-variant Cancel button while
   a run is mid-flight (guarded by `confirm()`). Half-created VMs are
   intentionally NOT destroyed on cancel — that's a separate user action.
+- **ISO extraction / image cache** (closes §1) — new `internal/imagecache`
+  package: parses `images.yaml`, fetches the upstream `.sha256` to derive
+  a content-addressed cache dir, downloads the ISO with periodic 2-second
+  progress lines, verifies sha256 on the fly, and extracts
+  `boot/x86_64/loader/{linux,initrd}` + `LiveOS/squashfs.img` into
+  `runs/<id>/staging/repo/` via go-diskfs (no external xorriso). Cache
+  lives at `%LOCALAPPDATA%\cluster-installer\cache\images\<sha-prefix>\`
+  so concurrent content tags pointing at the same upstream share storage.
+  The orchestrator gates this on having any Leap/Tumbleweed node — pure
+  MicroOS clusters skip the whole stage. Idempotent at both layers
+  (cache dir hit → skip download; staging mtime ≥ ISO mtime → skip
+  extract).
 
 ---
 

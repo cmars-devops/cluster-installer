@@ -13,17 +13,18 @@ func AppDataDir() string {
 	return filepath.Join(os.Getenv("LOCALAPPDATA"), "cluster-installer")
 }
 
-func RuntimeDir() string  { return filepath.Join(AppDataDir(), "runtime") }
-func ContentDir() string  { return filepath.Join(AppDataDir(), "content") }
-func RunsDir() string     { return filepath.Join(AppDataDir(), "runs") }
+func RuntimeDir() string    { return filepath.Join(AppDataDir(), "runtime") }
+func ContentDir() string    { return filepath.Join(AppDataDir(), "content") }
+func RunsDir() string       { return filepath.Join(AppDataDir(), "runs") }
 func ProviderCache() string { return filepath.Join(AppDataDir(), "cache", "providers") }
-func BinDir() string      { return filepath.Join(AppDataDir(), "bin") }
+func ImageCache() string    { return filepath.Join(AppDataDir(), "cache", "images") }
+func BinDir() string        { return filepath.Join(AppDataDir(), "bin") }
 
 // EnsureDirs creates the entire tree on first run.
 func EnsureDirs() error {
 	for _, d := range []string{
 		AppDataDir(), RuntimeDir(), ContentDir(), RunsDir(),
-		ProviderCache(), BinDir(),
+		ProviderCache(), ImageCache(), BinDir(),
 	} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
