@@ -96,6 +96,10 @@ export const api = {
   // In dev/browser-only mode the stub returns realistic mock data so the
   // discovery → dropdown UX can be exercised without the Go backend.
   discoverEsxi(target: unknown): Promise<ESXiDiscovery> {
+    // Mock matches the production IDC reference environment (Dell R760
+    // with 6 SSD arrays in mixed sizes + a default datastore + 2 NFS
+    // mounts + 1 inaccessible array for testing the filter). Real
+    // govmomi probe replaces this in Phase 2.
     return call<ESXiDiscovery>('DiscoverESXi', [target], {
       ok: true,
       host: {
@@ -105,15 +109,23 @@ export const api = {
         api_type: 'HostAgent'
       },
       datastores: [
-        { name: 'datastore1',           type: 'VMFS', capacity_gb:  500, free_gb:  412, accessible: true },
-        { name: 'SSD-RAID0-4Ti-02',     type: 'VMFS', capacity_gb: 4096, free_gb: 2548, accessible: true },
-        { name: 'SSD-RAID0-2Ti-01',     type: 'VMFS', capacity_gb: 2048, free_gb: 1530, accessible: true },
-        { name: 'NFS-iso',              type: 'NFS',  capacity_gb:  100, free_gb:   73, accessible: true }
+        { name: 'datastore1',          type: 'VMFS', capacity_gb:  500, free_gb:  412, accessible: true },
+        { name: 'SSD-RAID0-500Gi-01',  type: 'VMFS', capacity_gb:  500, free_gb:  468, accessible: true },
+        { name: 'SSD-RAID0-500Gi-02',  type: 'VMFS', capacity_gb:  500, free_gb:  481, accessible: true },
+        { name: 'SSD-RAID0-2Ti-01',    type: 'VMFS', capacity_gb: 2048, free_gb: 1530, accessible: true },
+        { name: 'SSD-RAID0-2Ti-02',    type: 'VMFS', capacity_gb: 2048, free_gb: 1622, accessible: true },
+        { name: 'SSD-RAID0-4Ti-01',    type: 'VMFS', capacity_gb: 4096, free_gb: 2891, accessible: true },
+        { name: 'SSD-RAID0-4Ti-02',    type: 'VMFS', capacity_gb: 4096, free_gb: 2548, accessible: true },
+        { name: 'NFS-iso',             type: 'NFS',  capacity_gb:  100, free_gb:   73, accessible: true },
+        { name: 'NFS-backup',          type: 'NFS',  capacity_gb: 8192, free_gb: 6411, accessible: true },
+        { name: 'OFFLINE-old-array',   type: 'VMFS', capacity_gb: 1024, free_gb:    0, accessible: false }
       ],
       networks: [
-        { name: 'VM Network',           vswitch: 'vSwitch0' },
-        { name: 'Management Network',   vswitch: 'vSwitch0' },
-        { name: 'Storage-Net (VLAN100)', vswitch: 'vSwitch1', vlan_id: 100 }
+        { name: 'VM Network',                  vswitch: 'vSwitch0' },
+        { name: 'Management Network',          vswitch: 'vSwitch0' },
+        { name: 'Storage-Net (VLAN100)',       vswitch: 'vSwitch1', vlan_id: 100 },
+        { name: 'Ceph-Cluster-Net (VLAN200)',  vswitch: 'vSwitch1', vlan_id: 200 },
+        { name: 'DMZ',                         vswitch: 'vSwitch2', vlan_id: 50 }
       ]
     });
   }

@@ -354,6 +354,23 @@ content:
 
     <Section title={$_('step4.nodes')}
              subtitle={$wizardStore.inventory.nodes.length + ' nodes'}>
+      {#if $wizardStore.inventory.target.type === 'esxi'}
+        {#if datastoreOptions.length > 0}
+          <div class="discovery-banner ok">
+            ✓ Step 2 discovery에서 <strong>{$wizardStore.discovered.datastores?.length ?? 0}</strong>개 datastore 발견
+            (사용 가능 <strong>{datastoreOptions.length}</strong>개,
+             제외 {($wizardStore.discovered.datastores?.length ?? 0) - datastoreOptions.length}개).
+            노드별 "설치 디스크 위치" 드롭다운에서 선택하세요.
+          </div>
+        {:else}
+          <div class="discovery-banner missing">
+            ⚠ Step 2에서 ESXi discovery를 아직 실행하지 않았습니다.
+            "연결 + 리소스 가져오기" 버튼을 눌러야 datastore 드롭다운이 채워집니다.
+            지금 진행하면 노드별 datastore가 자유 텍스트 입력으로 표시됩니다.
+          </div>
+        {/if}
+      {/if}
+
       <div class="presets">
         <span class="muted">Presets:</span>
         {#if topology !== 'ceph-only'}
@@ -407,16 +424,16 @@ content:
             </Field>
           </div>
           <div class="grid-2">
-            <Field label="설치 디스크 위치"
+            <Field label="설치 디스크 위치 ({datastoreOptions.length} 개 발견)"
                    hint={datastoreOptions.length > 0
-                     ? '이 VM의 디스크가 위치할 datastore. 비워두면 클러스터 기본값(' + ($wizardStore.inventory.target.datastore || '없음') + ') 사용.'
+                     ? `Step 2 discovery로 가져온 ${datastoreOptions.length}개 datastore에서 선택. 모두 표시되지 않는다면 Step 2로 돌아가 "연결 + 리소스 가져오기"를 다시 눌러주세요.`
                      : 'Step 2의 "연결 + 리소스 가져오기"를 누르면 드롭다운으로 채워집니다. 비워두면 클러스터 기본값 사용.'}>
               {#if datastoreOptions.length > 0}
                 <select value={node.datastore ?? ''}
                         onchange={(e) => updateNode(i, { datastore: (e.target as HTMLSelectElement).value || undefined })}>
                   <option value="">— 기본값({$wizardStore.inventory.target.datastore || '미지정'}) —</option>
                   {#each datastoreOptions as ds}
-                    <option value={ds.name}>{ds.name} {ds.free_gb ? `(${ds.free_gb.toFixed(0)} GB free)` : ''}</option>
+                    <option value={ds.name}>{ds.name} ({ds.type ?? 'VMFS'}, {ds.free_gb ? ds.free_gb.toFixed(0) : '?'} / {ds.capacity_gb ? ds.capacity_gb.toFixed(0) : '?'} GB)</option>
                   {/each}
                 </select>
               {:else}
@@ -545,4 +562,12 @@ content:
   .hint-row { display: flex; gap: 0.5rem; align-items: flex-start; font-size: 0.8rem;
               line-height: 1.5; color: #d4d4d8; }
   .hint-row span { flex: 1; }
+
+  .discovery-banner { padding: 0.6rem 0.8rem; border-radius: 5px; font-size: 0.82rem;
+                      line-height: 1.5; margin-bottom: 0.75rem; }
+  .discovery-banner strong { color: inherit; font-weight: 600; }
+  .discovery-banner.ok      { background: #14532d20; border: 1px solid #16a34a;
+                              color: #86efac; }
+  .discovery-banner.missing { background: #78350f20; border: 1px solid #d97706;
+                              color: #fde68a; }
 </style>
