@@ -165,6 +165,14 @@ the Wails app context.
   (libvirt 52:54:00, Proxmox BC:24:11, ESXi 00:50:56 with the high byte
   masked to ≤0x3F). The resulting `PrimaryMAC` is persisted to `run.json`
   before stages start, so seed renders + tfvars see the same address.
+- **Cancellation contract** (closes §6) — `App.ApplyRun` now derives a
+  per-run cancellable context tracked in `App.runCancels`; new
+  `App.CancelRun(runID)` triggers the cancel func, killing the running
+  terraform/ansible child. `Orchestrator.fail` distinguishes
+  `context.Canceled` from real errors and writes `LastError = "<stage>:
+  cancelled by user"`. Step 6 has a `danger`-variant Cancel button while
+  a run is mid-flight (guarded by `confirm()`). Half-created VMs are
+  intentionally NOT destroyed on cancel — that's a separate user action.
 
 ---
 
