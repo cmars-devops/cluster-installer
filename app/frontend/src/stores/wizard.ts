@@ -123,6 +123,11 @@ export function gotoStep(idx: number) {
   wizardStore.update((s) => ({ ...s, step: Math.max(0, Math.min(6, idx)) }));
 }
 
+// Each helper produces a fully new state tree. Svelte's $derived /
+// $effect rely on reference identity for some optimization paths in
+// runes mode, so mutating in place + returning the same `s` reference
+// can leave reactive consumers stale (Step 2's target.type was the
+// canonical bug).
 export function addNode(template?: Partial<NodeSpec>) {
   wizardStore.update((s) => {
     const idx = s.inventory.nodes.length + 1;
@@ -136,21 +141,23 @@ export function addNode(template?: Partial<NodeSpec>) {
       disk_gb: template?.disk_gb ?? 60,
       ...template
     };
-    s.inventory.nodes = [...s.inventory.nodes, fresh];
-    return s;
+    return { ...s, inventory: { ...s.inventory, nodes: [...s.inventory.nodes, fresh] } };
   });
 }
 
 export function removeNode(index: number) {
-  wizardStore.update((s) => {
-    s.inventory.nodes = s.inventory.nodes.filter((_, i) => i !== index);
-    return s;
-  });
+  wizardStore.update((s) => ({
+    ...s,
+    inventory: { ...s.inventory, nodes: s.inventory.nodes.filter((_, i) => i !== index) }
+  }));
 }
 
 export function updateNode(index: number, patch: Partial<NodeSpec>) {
-  wizardStore.update((s) => {
-    s.inventory.nodes = s.inventory.nodes.map((n, i) => (i === index ? { ...n, ...patch } : n));
-    return s;
-  });
+  wizardStore.update((s) => ({
+    ...s,
+    inventory: {
+      ...s.inventory,
+      nodes: s.inventory.nodes.map((n, i) => (i === index ? { ...n, ...patch } : n))
+    }
+  }));
 }

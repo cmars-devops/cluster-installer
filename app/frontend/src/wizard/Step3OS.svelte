@@ -13,15 +13,17 @@
   function chooseImage(role: 'k8s' | 'ceph', os: OS) {
     if (role === 'k8s') k8sOS = os;
     else cephOS = os;
-    // Apply default OS to nodes by their roles when they exist (Step 4 will let users override).
-    wizardStore.update((s) => {
-      s.inventory.nodes = s.inventory.nodes.map((n) => {
-        const isCeph = n.roles.some((r) => r.startsWith('ceph-'));
-        const target = isCeph ? cephOS : k8sOS;
-        return { ...n, os: target };
-      });
-      return s;
-    });
+    // Apply default OS to nodes by their roles when they exist (Step 4 lets users override).
+    wizardStore.update((s) => ({
+      ...s,
+      inventory: {
+        ...s.inventory,
+        nodes: s.inventory.nodes.map((n) => {
+          const isCeph = n.roles.some((r) => r.startsWith('ceph-'));
+          return { ...n, os: isCeph ? cephOS : k8sOS };
+        })
+      }
+    }));
   }
 
   const images: { id: OS; tag: string; descKey: string }[] = [

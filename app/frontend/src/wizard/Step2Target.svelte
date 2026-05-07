@@ -14,20 +14,24 @@
   let testResult = $state<{ ok: boolean; msg: string } | null>(null);
 
   function setType(t: TargetType) {
-    wizardStore.update((s) => {
-      s.inventory.target.type = t;
-      // Provide sensible defaults per type so the form isn't empty.
-      if (t === 'esxi' && !s.inventory.target.username) {
-        s.inventory.target.username = 'root';
+    // Immutable update — replace the inventory.target object so the auto-
+    // subscribed $derived in this component sees a new reference and
+    // re-renders. (Mutating in place + returning the same ref leaves the
+    // .active class / form section frozen on whatever was first selected.)
+    wizardStore.update((s) => ({
+      ...s,
+      inventory: {
+        ...s.inventory,
+        target: {
+          ...s.inventory.target,
+          type: t,
+          // ESXi-specific sensible defaults applied on first pick of that type.
+          ...(t === 'esxi' && !s.inventory.target.username ? { username: 'root' } : {}),
+          ...(t === 'esxi' && !s.inventory.target.tls_insecure ? { tls_insecure: true } : {}),
+          ...(t === 'esxi' && !s.inventory.target.network ? { network: 'VM Network' } : {})
+        }
       }
-      if (t === 'esxi' && !s.inventory.target.tls_insecure) {
-        s.inventory.target.tls_insecure = true; // ESXi labs almost always self-signed
-      }
-      if (t === 'esxi' && !s.inventory.target.network) {
-        s.inventory.target.network = 'VM Network';
-      }
-      return s;
-    });
+    }));
     testResult = null;
   }
 
