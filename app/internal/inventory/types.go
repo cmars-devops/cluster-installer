@@ -79,6 +79,14 @@ type NodeSpec struct {
 	// distribute Ceph CORE / OSD nodes across different physical arrays so a
 	// single hardware failure can't take quorum down. Blank = inherit cluster.
 	Datastore string `yaml:"datastore,omitempty" json:"datastore,omitempty"`
+
+	// DiskProvisioning controls how the VM's virtual disks are allocated:
+	//   thin         — sparse / on-demand (default; storage-efficient)
+	//   thick        — fully pre-allocated, lazy zeroing
+	//   thick-eager  — pre-allocated + zeroed at create (recommended for
+	//                  Ceph OSDs to avoid first-write throughput penalty;
+	//                  ESXi only — falls back to 'thick' on libvirt/Proxmox)
+	DiskProvisioning string `yaml:"disk_provisioning,omitempty" json:"disk_provisioning,omitempty"`
 }
 
 // HasRole is a template helper.

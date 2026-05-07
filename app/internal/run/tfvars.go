@@ -22,6 +22,7 @@ type libvirtNodeVar struct {
 	SeedISOPath   string `json:"seed_iso_path"`
 	MAC           string `json:"mac,omitempty"`
 	Pool          string `json:"pool,omitempty"`         // libvirt storage pool override (per-node)
+	DiskFormat    string `json:"disk_format,omitempty"`  // "qcow2" (thin) or "raw" (thick)
 	BootMode      string `json:"boot_mode"`              // "kernel" (Agama) or "iso" (Combustion)
 	KernelPath    string `json:"kernel_path,omitempty"`
 	InitrdPath    string `json:"initrd_path,omitempty"`
@@ -38,6 +39,8 @@ type proxmoxNodeVar struct {
 	SeedISOID    string `json:"seed_iso_id"`
 	MAC          string `json:"mac,omitempty"`
 	DatastoreID  string `json:"datastore_id,omitempty"` // Proxmox storage override (per-node)
+	FileFormat   string `json:"file_format,omitempty"`  // "qcow2" (thin) or "raw" (thick)
+	Discard      bool   `json:"discard,omitempty"`      // SSD TRIM passthrough — set when format=qcow2
 }
 
 // renderTFVars writes runs/<id>/terraform/tfvars.json. Returns the path.
@@ -76,7 +79,8 @@ func (o *Orchestrator) writeLibvirtTFVars(path string) error {
 			DiskGB:       defaultInt(n.DiskGB, 40),
 			ExtraDisksGB: extraDisksFor(n),
 			MAC:          n.PrimaryMAC,
-			Pool:         n.Datastore, // libvirt pool override (per-node) — empty = stack default
+			Pool:         n.Datastore,                  // libvirt pool override (per-node) — empty = stack default
+			DiskFormat:   libvirtFormatFor(n.DiskProvisioning),
 		}
 		// Combustion ISO is always packed; Agama uses direct kernel boot.
 		isoPath := filepath.Join(o.stagingDir, "seeds", "seed-"+n.Hostname+".iso")
@@ -117,6 +121,7 @@ func (o *Orchestrator) writeLibvirtTFVars(path string) error {
 func (o *Orchestrator) writeProxmoxTFVars(path string) error {
 	nodes := make([]proxmoxNodeVar, 0, len(o.Inventory.Nodes))
 	for _, n := range o.Inventory.Nodes {
+		fileFormat, discard := proxmoxFormatFor(n.DiskProvisioning)
 		nv := proxmoxNodeVar{
 			Name:         n.Hostname,
 			MemoryMB:     defaultInt(n.MemoryGB*1024, 4096),
@@ -125,6 +130,8 @@ func (o *Orchestrator) writeProxmoxTFVars(path string) error {
 			ExtraDisksGB: extraDisksFor(n),
 			MAC:          n.PrimaryMAC,
 			DatastoreID:  n.Datastore, // Proxmox storage override (per-node)
+			FileFormat:   fileFormat,
+			Discard:      discard,
 			// TODO: Proxmox seed ISOs need to be uploaded to the PVE storage
 			// before TF runs. The orchestrator must call the Proxmox API to
 			// upload staging/seeds/*.iso into the chosen iso datastore and
@@ -153,6 +160,31 @@ func (o *Orchestrator) writeProxmoxTFVars(path string) error {
 
 func (o *Orchestrator) runDir() string {
 	return filepath.Dir(o.stagingDir) // staging is a child of runs/<id>
+}
+
+// libvirtFormatFor maps disk_provisioning to libvirt's qcow2/raw choice.
+// qcow2 supports sparse allocation (thin); raw is fully preallocated (thick).
+// libvirt has no equivalent of ESXi's eager-zeroed beyond raw, so 'thick-eager'
+// degrades to raw with a documented note.
+func libvirtFormatFor(p string) string {
+	switch p {
+	case "thick", "thick-eager":
+		return "raw"
+	default:
+		return "qcow2" // thin / unset
+	}
+}
+
+// proxmoxFormatFor maps disk_provisioning to Proxmox file_format + discard.
+// qcow2 = thin (with discard for SSD TRIM); raw = thick (no discard).
+// thick-eager again degrades to raw on Proxmox.
+func proxmoxFormatFor(p string) (format string, discard bool) {
+	switch p {
+	case "thick", "thick-eager":
+		return "raw", false
+	default:
+		return "qcow2", true // thin: enable TRIM passthrough
+	}
 }
 
 func extraDisksFor(n inventory.NodeSpec) []int {

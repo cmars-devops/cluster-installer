@@ -18,6 +18,18 @@ export interface NodeSpec {
    *  storage pool (libvirt) holds this VM's virtual disks.
    *  Blank = use the cluster-level target.datastore. */
   datastore?: string;
+  /** Disk provisioning strategy:
+   *   - 'thin'         — sparse / on-demand allocation. Storage efficient.
+   *                      libvirt: qcow2  /  Proxmox: file_format=qcow2
+   *                      ESXi: thin
+   *   - 'thick'        — fully pre-allocated, lazy zeroing.
+   *                      libvirt: raw  /  Proxmox: file_format=raw
+   *                      ESXi: zeroedthick (lazy)
+   *   - 'thick-eager'  — pre-allocated + zeroed at create. Best for Ceph OSDs
+   *                      (avoids first-write penalty on data disks). ESXi-
+   *                      specific; on libvirt/Proxmox falls back to 'thick'.
+   *  Default: 'thin'. */
+  disk_provisioning?: 'thin' | 'thick' | 'thick-eager';
 }
 
 export type Topology = 'ceph-only' | 'k8s-only' | 'combined';

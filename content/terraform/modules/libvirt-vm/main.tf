@@ -18,6 +18,11 @@ variable "seed_iso_path"   { type = string; description = "Per-node seed ISO on 
 variable "network_id"      { type = string }
 variable "mac"             { type = string; default = null }
 variable "pool"            { type = string; default = "default" }
+variable "disk_format"     { type = string; default = "qcow2"     # qcow2=thin, raw=thick
+                             validation {
+                               condition     = contains(["qcow2", "raw"], var.disk_format)
+                               error_message = "disk_format must be 'qcow2' (thin) or 'raw' (thick)."
+                             } }
 
 # ---- direct kernel boot (Agama: openSUSE Leap 16+ / Tumbleweed) -------
 # When boot_mode == "kernel" the domain boots vmlinuz/initrd directly with
@@ -39,18 +44,19 @@ variable "initrd_path" { type = string; default = "" }
 variable "cmdline"     { type = string; default = "" }
 
 resource "libvirt_volume" "root" {
-  name             = "${var.name}-root.qcow2"
+  name             = "${var.name}-root.${var.disk_format}"
   pool             = var.pool
   base_volume_id   = var.base_volume_id
   size             = var.disk_gb * 1024 * 1024 * 1024
+  format           = var.disk_format
 }
 
 resource "libvirt_volume" "extra" {
   for_each = { for i, gb in var.extra_disks_gb : tostring(i) => gb }
-  name     = "${var.name}-data-${each.key}.qcow2"
+  name     = "${var.name}-data-${each.key}.${var.disk_format}"
   pool     = var.pool
   size     = each.value * 1024 * 1024 * 1024
-  format   = "qcow2"
+  format   = var.disk_format
 }
 
 resource "libvirt_domain" "vm" {

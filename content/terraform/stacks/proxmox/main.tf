@@ -37,7 +37,9 @@ variable "nodes" {
     extra_disks_gb = list(number)
     seed_iso_id    = string
     mac            = optional(string)
-    datastore_id   = optional(string, "")  # per-node Proxmox storage override
+    datastore_id   = optional(string, "")    # per-node Proxmox storage override
+    file_format    = optional(string, "qcow2") # qcow2=thin, raw=thick
+    discard        = optional(bool, true)
   }))
 }
 
@@ -58,6 +60,8 @@ module "vm" {
   iso_datastore  = var.iso_datastore
   bridge         = var.bridge
   mac            = each.value.mac
+  file_format    = each.value.file_format
+  discard        = each.value.discard
 }
 
 output "vm_ids" {

@@ -90,6 +90,11 @@
             "type": "string",
             "description": "Per-node override of target.datastore. Used to distribute VMs across physical arrays for fault tolerance (Ceph mon quorum, etc.). Blank = inherit cluster-level value."
           },
+          "disk_provisioning": {
+            "enum": ["thin", "thick", "thick-eager"],
+            "default": "thin",
+            "description": "Virtual disk allocation strategy. thin=sparse, thick=preallocated lazy-zero, thick-eager=preallocated + zeroed at create (recommended for Ceph OSD data disks; ESXi-only — falls back to thick on libvirt/Proxmox)."
+          },
           "ssh_authorized_keys": { "type": "array", "items": { "type": "string" } }
         }
       }

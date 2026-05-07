@@ -97,6 +97,11 @@
       out.push({ tone: 'danger',
         msg: `OSD 노드 ${osdNodesWithoutDevices.length}개에 storage_devices 미설정 — cephadm이 디스크를 찾지 못합니다. 각 OSD 행의 'Storage devices' 필드에 /dev/sdb 형식으로 입력.` });
     }
+    const thinOSDs = osdNodes.filter(n => (n.disk_provisioning ?? 'thin') === 'thin').length;
+    if (thinOSDs > 0) {
+      out.push({ tone: 'warn',
+        msg: `OSD 노드 ${thinOSDs}개가 thin 프로비저닝 — first-write 시 할당으로 OSD throughput 저하. ESXi라면 'thick eager-zeroed', libvirt/Proxmox라면 'thick' 권장.` });
+    }
     return out;
   });
 
@@ -401,24 +406,36 @@ content:
                      oninput={(e) => updateNode(i, { disk_gb: +(e.target as HTMLInputElement).value || 10 })} />
             </Field>
           </div>
-          <Field label="설치 디스크 위치 (datastore / storage pool)"
-                 hint={datastoreOptions.length > 0
-                   ? '이 VM의 OS 디스크와 추가 디스크가 위치할 곳. 비워두면 클러스터 기본값(' + ($wizardStore.inventory.target.datastore || '없음') + ') 사용. 같은 데이터스토어가 너무 몰리면 단일 어레이 장애로 전체 다운될 수 있으니 분산 권장.'
-                   : '클러스터 기본값(target.datastore)을 사용하려면 비워두세요. Step 2 ESXi 토폴로지에서 "연결 + 리소스 가져오기"를 누르면 실제 데이터스토어 목록이 드롭다운에 채워집니다.'}>
-            {#if datastoreOptions.length > 0}
-              <select value={node.datastore ?? ''}
-                      onchange={(e) => updateNode(i, { datastore: (e.target as HTMLSelectElement).value || undefined })}>
-                <option value="">— 클러스터 기본값({$wizardStore.inventory.target.datastore || '미지정'}) —</option>
-                {#each datastoreOptions as ds}
-                  <option value={ds.name}>{ds.name} {ds.free_gb ? `(${ds.free_gb.toFixed(0)} GB free)` : ''}</option>
-                {/each}
+          <div class="grid-2">
+            <Field label="설치 디스크 위치"
+                   hint={datastoreOptions.length > 0
+                     ? '이 VM의 디스크가 위치할 datastore. 비워두면 클러스터 기본값(' + ($wizardStore.inventory.target.datastore || '없음') + ') 사용.'
+                     : 'Step 2의 "연결 + 리소스 가져오기"를 누르면 드롭다운으로 채워집니다. 비워두면 클러스터 기본값 사용.'}>
+              {#if datastoreOptions.length > 0}
+                <select value={node.datastore ?? ''}
+                        onchange={(e) => updateNode(i, { datastore: (e.target as HTMLSelectElement).value || undefined })}>
+                  <option value="">— 기본값({$wizardStore.inventory.target.datastore || '미지정'}) —</option>
+                  {#each datastoreOptions as ds}
+                    <option value={ds.name}>{ds.name} {ds.free_gb ? `(${ds.free_gb.toFixed(0)} GB free)` : ''}</option>
+                  {/each}
+                </select>
+              {:else}
+                <input value={node.datastore ?? ''}
+                       oninput={(e) => updateNode(i, { datastore: (e.target as HTMLInputElement).value || undefined })}
+                       placeholder={'(blank → ' + ($wizardStore.inventory.target.datastore || 'cluster default') + ')'} />
+              {/if}
+            </Field>
+
+            <Field label="디스크 프로비저닝"
+                   hint="Thin: 사용시 할당, 저장공간 절약 (OS 디스크 권장). Thick: 사전 전체 할당. Thick eager-zeroed: 사전 할당 + 0 채움, ESXi 전용 — Ceph OSD 데이터 디스크 권장 (first-write 페널티 회피).">
+              <select value={node.disk_provisioning ?? 'thin'}
+                      onchange={(e) => updateNode(i, { disk_provisioning: (e.target as HTMLSelectElement).value as 'thin' | 'thick' | 'thick-eager' })}>
+                <option value="thin">Thin (기본 — 저장공간 절약)</option>
+                <option value="thick">Thick (사전 할당, lazy zero)</option>
+                <option value="thick-eager">Thick eager-zeroed (사전 할당 + 0 채움, ESXi)</option>
               </select>
-            {:else}
-              <input value={node.datastore ?? ''}
-                     oninput={(e) => updateNode(i, { datastore: (e.target as HTMLInputElement).value || undefined })}
-                     placeholder={'(blank → ' + ($wizardStore.inventory.target.datastore || 'cluster default') + ')'} />
-            {/if}
-          </Field>
+            </Field>
+          </div>
 
           <Field label={$_('step4.node.roles')}>
             <div class="roles">
