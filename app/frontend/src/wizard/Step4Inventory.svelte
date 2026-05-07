@@ -336,13 +336,6 @@
   function collapseAllNodes() {
     nodeExpanded = {};
   }
-  // Used to auto-expand the row created by the "+ 노드 추가" button.
-  function addNodeManual() {
-    const newIdx = $wizardStore.inventory.nodes.length;
-    addNode();
-    nodeExpanded = { ...nodeExpanded, [newIdx]: true };
-  }
-
   // Concise per-node validation summary surfaced on the collapsed row.
   function rowIssues(n: NodeSpec): string[] {
     const errs: string[] = [];
@@ -816,9 +809,9 @@ content:
         </div>
       {/each}
 
-      <div class="add-row">
-        <Button variant="primary" onclick={addNodeManual}>+ {$_('step4.addNode')}</Button>
-      </div>
+      {#if $wizardStore.inventory.nodes.length === 0}
+        <p class="muted empty-hint">위 프리셋 카드에서 노드를 추가하세요.</p>
+      {/if}
     </Section>
 
     <div class="row">
@@ -916,7 +909,8 @@ content:
   .role-chip.active { background: #1e293b; border-color: #3b82f6; color: #93c5fd; }
   .role-chip input { display: none; }
 
-  .add-row { margin-top: 0.5rem; }
+  .empty-hint { padding: 1rem; text-align: center; background: #0f0f12;
+                border: 1px dashed #3f3f46; border-radius: 6px; margin: 0; }
   .presets-head { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.6rem; }
   .preset-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
                  gap: 0.6rem; margin-bottom: 1rem; }
