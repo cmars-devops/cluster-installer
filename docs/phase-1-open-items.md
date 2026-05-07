@@ -32,26 +32,35 @@ Implementation plan:
 Trigger: orchestrator's `startHTTPAndRenderSeeds` stage, before per-node
 seed rendering, only when the run has any Leap/Tumbleweed node.
 
-## 2. libvirt base volume management
+## 2. libvirt base volume management — partially done
 
-`tfvars.go > baseVolumeIDFor` returns a hard-coded volume name like
-`openSUSE-Leap-16.0-base.qcow2`. Real flow needs:
+The kernel-boot half is closed (option (b) per below): `libvirt-vm`
+accepts `base_volume_id == ""` and emits a blank `libvirt_volume` for
+kernel-boot domains. The stack now threads per-node `base_volume_id`
+through (defaults to `""`), and tfvars renders an empty value for
+Leap/Tumbleweed. Done in commit `<see git log>`.
 
-1. Look up the OS image in `content/images.yaml` (reachable via the
-   `imagecache` package above).
-2. Upload the qcow2 to the libvirt pool over SSH (or libvirt API) — once
-   per content tag, cached on the libvirt host.
-3. Return the actual `libvirt_volume.id`.
+What's still manual: **MicroOS qcow2 upload to the libvirt pool.** The
+tfvars renderer expects a volume named `cluster-installer-microos.qcow2`
+to exist in the chosen pool ahead of `terraform apply`. The operator
+prepares this once per libvirt host:
 
-For MicroOS the qcow2 is the bootable image itself; for Leap/Tumbleweed the
-qcow2 is unused (we boot the kernel directly), but the module currently
-demands a base_volume_id for the root disk's backing chain. Either:
-- (a) Build a minimal blank qcow2 once and reuse it, or
-- (b) Refactor `libvirt-vm` to allow `base_volume_id == ""` for kernel-boot
-  domains (the root volume is created blank during install).
+```bash
+virsh vol-create-as default cluster-installer-microos.qcow2 \
+    --capacity $(stat -c%s openSUSE-MicroOS.x86_64.qcow2) --format qcow2
+virsh vol-upload --pool default cluster-installer-microos.qcow2 \
+    openSUSE-MicroOS.x86_64.qcow2
+```
 
-Option (b) is cleaner and aligns with how Anaconda/Agama actually work —
-the installer creates the partition table from scratch.
+A future iteration will:
+1. Reuse `imagecache.EnsureImage` to download MicroOS qcow2 to
+   `%LOCALAPPDATA%\cluster-installer\cache\images\<sha>\image.iso`.
+2. SCP it to the libvirt host and call `virsh vol-create-as` +
+   `vol-upload` over SSH.
+3. Skip if the destination volume already exists with a matching size.
+
+Tracked but non-blocking — Agama (Leap/Tumbleweed) clusters work today
+without any manual upload, which covers the most common install path.
 
 ## 3. ESXi target backend (govmomi adapter)
 
@@ -173,6 +182,14 @@ the Wails app context.
   cancelled by user"`. Step 6 has a `danger`-variant Cancel button while
   a run is mid-flight (guarded by `confirm()`). Half-created VMs are
   intentionally NOT destroyed on cancel — that's a separate user action.
+- **libvirt base volume — kernel-boot path** (partially closes §2) —
+  `libvirt-vm` and the libvirt stack now both accept an empty
+  `base_volume_id`, threading per-node values through. tfvars renders
+  empty for Leap/Tumbleweed (kernel boot — Agama formats the disk
+  fresh) and a deterministic `cluster-installer-microos.qcow2` for
+  MicroOS. Operators still upload the MicroOS qcow2 manually one time;
+  `imagecache.EnsureImage` could be reused for an SSH-driven upload but
+  that wasn't the immediate blocker.
 - **ISO extraction / image cache** (closes §1) — new `internal/imagecache`
   package: parses `images.yaml`, fetches the upstream `.sha256` to derive
   a content-addressed cache dir, downloads the ISO with periodic 2-second

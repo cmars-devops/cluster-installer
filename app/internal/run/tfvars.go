@@ -14,19 +14,23 @@ import (
 // libvirtNodeVar matches the object shape declared in
 // content/terraform/stacks/libvirt/main.tf > variable "nodes".
 type libvirtNodeVar struct {
-	Name          string `json:"name"`
-	MemoryMB      int    `json:"memory_mb"`
-	VCPU          int    `json:"vcpu"`
-	DiskGB        int    `json:"disk_gb"`
-	ExtraDisksGB  []int  `json:"extra_disks_gb"`
-	SeedISOPath   string `json:"seed_iso_path"`
-	MAC           string `json:"mac,omitempty"`
-	Pool          string `json:"pool,omitempty"`         // libvirt storage pool override (per-node)
-	DiskFormat    string `json:"disk_format,omitempty"`  // "qcow2" (thin) or "raw" (thick)
-	BootMode      string `json:"boot_mode"`              // "kernel" (Agama) or "iso" (Combustion)
-	KernelPath    string `json:"kernel_path,omitempty"`
-	InitrdPath    string `json:"initrd_path,omitempty"`
-	Cmdline       string `json:"cmdline,omitempty"`
+	Name         string `json:"name"`
+	MemoryMB     int    `json:"memory_mb"`
+	VCPU         int    `json:"vcpu"`
+	DiskGB       int    `json:"disk_gb"`
+	ExtraDisksGB []int  `json:"extra_disks_gb"`
+	SeedISOPath  string `json:"seed_iso_path"`
+	MAC          string `json:"mac,omitempty"`
+	Pool         string `json:"pool,omitempty"`        // libvirt storage pool override (per-node)
+	DiskFormat   string `json:"disk_format,omitempty"` // "qcow2" (thin) or "raw" (thick)
+	BootMode     string `json:"boot_mode"`             // "kernel" (Agama) or "iso" (Combustion)
+	KernelPath   string `json:"kernel_path,omitempty"`
+	InitrdPath   string `json:"initrd_path,omitempty"`
+	Cmdline      string `json:"cmdline,omitempty"`
+	// Per-node base qcow2 to clone the root disk from. Required for MicroOS
+	// (boot_mode=iso); empty for Leap/Tumbleweed kernel-boot — Agama formats
+	// a blank volume from scratch during install.
+	BaseVolumeID string `json:"base_volume_id,omitempty"`
 }
 
 // proxmoxNodeVar matches content/terraform/stacks/proxmox/main.tf > variable "nodes".
@@ -89,8 +93,15 @@ func (o *Orchestrator) writeLibvirtTFVars(path string) error {
 		switch n.OS {
 		case "microos":
 			nv.BootMode = "iso"
+			// MicroOS clones from a base qcow2 (the immutable root). The
+			// orchestrator uploads it to the libvirt pool ahead of TF
+			// apply; the volume name follows a deterministic convention so
+			// re-runs of the same content tag find the existing volume.
+			nv.BaseVolumeID = libvirtBaseVolumeName(n.OS)
 		case "leap", "tumbleweed":
 			nv.BootMode = "kernel"
+			// Kernel-boot domains: leave BaseVolumeID empty so libvirt
+			// creates a blank root volume Agama formats during install.
 			nv.KernelPath = filepath.Join(o.stagingDir, "repo", "vmlinuz")
 			nv.InitrdPath = filepath.Join(o.stagingDir, "repo", "initrd")
 			profileURL := o.baseURL + "/profiles/" + n.Hostname + ".json"
@@ -109,10 +120,14 @@ func (o *Orchestrator) writeLibvirtTFVars(path string) error {
 	}
 
 	doc := map[string]any{
-		"libvirt_uri":    o.Inventory.Target.Endpoint,
-		"pool":           "default",
-		"network_id":     "default", // TODO: wizard step 2 should let user pick
-		"base_volume_id": baseVolumeIDFor(o.Inventory),
+		"libvirt_uri": o.Inventory.Target.Endpoint,
+		"pool":        "default",
+		"network_id":  "default", // TODO: wizard step 2 should let user pick
+		// Stack-level base_volume_id is no longer used as the single
+		// source of truth — per-node base_volume_id wins. Pass empty so
+		// the stack's fallback path doesn't accidentally apply MicroOS's
+		// base volume to a Leap node.
+		"base_volume_id": "",
 		"nodes":          nodes,
 	}
 	return writeJSON(path, doc)
@@ -240,21 +255,19 @@ func extraDisksFor(n inventory.NodeSpec, c inventory.CephSpec) []int {
 	return out
 }
 
-func baseVolumeIDFor(inv inventory.Inventory) string {
-	// TODO: pull from images.yaml once the orchestrator caches the image.
-	// Phase 1 placeholder: assume the operator pre-uploaded a libvirt volume
-	// named after the OS family.
-	for _, n := range inv.Nodes {
-		switch n.OS {
-		case "microos":
-			return "openSUSE-MicroOS.qcow2"
-		case "leap":
-			return "openSUSE-Leap-16.0-base.qcow2"
-		case "tumbleweed":
-			return "openSUSE-Tumbleweed-base.qcow2"
-		}
+// libvirtBaseVolumeName returns the per-OS volume name we expect to find
+// (or upload) in the libvirt pool. The convention is a constant so the
+// orchestrator's pre-TF "ensure base volume" step and the per-node
+// tfvars renderer agree on what to look for. MicroOS is the only OS
+// today that needs a base volume — Leap/Tumbleweed boot directly from
+// vmlinuz/initrd and format a blank volume during install.
+func libvirtBaseVolumeName(os string) string {
+	switch os {
+	case "microos":
+		return "cluster-installer-microos.qcow2"
+	default:
+		return ""
 	}
-	return ""
 }
 
 func defaultInt(v, fallback int) int {

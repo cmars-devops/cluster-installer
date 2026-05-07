@@ -13,7 +13,11 @@ variable "memory_mb"       { type = number }
 variable "vcpu"            { type = number }
 variable "disk_gb"         { type = number }
 variable "extra_disks_gb"  { type = list(number); default = [] }
-variable "base_volume_id"  { type = string }
+variable "base_volume_id"  {
+  type        = string
+  default     = ""
+  description = "Optional. ID of a pre-uploaded base qcow2 to clone the root disk from. Required for MicroOS (boot_mode=iso). For boot_mode=kernel (Leap/Tumbleweed via Agama) leave empty — Agama partitions a blank volume from scratch during install."
+}
 variable "seed_iso_path"   { type = string; description = "Per-node seed ISO on the libvirt host (Combustion+Ignition for MicroOS, also generated for Leap as fallback)" }
 variable "network_id"      { type = string }
 variable "mac"             { type = string; default = null }
@@ -44,11 +48,13 @@ variable "initrd_path" { type = string; default = "" }
 variable "cmdline"     { type = string; default = "" }
 
 resource "libvirt_volume" "root" {
-  name             = "${var.name}-root.${var.disk_format}"
-  pool             = var.pool
-  base_volume_id   = var.base_volume_id
-  size             = var.disk_gb * 1024 * 1024 * 1024
-  format           = var.disk_format
+  name = "${var.name}-root.${var.disk_format}"
+  pool = var.pool
+  # Empty string → null → blank volume (provider behaviour). Required for
+  # Agama kernel-boot domains where the installer formats the disk fresh.
+  base_volume_id = var.base_volume_id != "" ? var.base_volume_id : null
+  size           = var.disk_gb * 1024 * 1024 * 1024
+  format         = var.disk_format
 }
 
 resource "libvirt_volume" "extra" {
