@@ -81,3 +81,17 @@ The installer is a Go binary; all process orchestration uses `os/exec` against
 Windows-native binaries (`terraform.exe`, `uv.exe`, `ansible-playbook.exe` from
 the uv venv). The only shell scripts are inside the Combustion stage, which
 runs on the *target* Linux node, not on Windows.
+
+## Embedded HTTP server (`internal/httpserve`)
+
+The installer runs a small HTTP server during a wizard run — bound to
+`0.0.0.0:<ephemeral>` on the host, serving from a per-run staging directory.
+This is **not optional**. Agama (openSUSE Leap 16+) does not pick up
+`inst.auto=device://OEMDRV/...`; it only fetches the profile from
+`inst.auto=http://<host>:<port>/profiles/<name>.json`. The same server hosts
+the squashfs image and any kernel/initrd needed by PXE flows in v2.
+
+For Combustion+Ignition (MicroOS), the OEMDRV/ignition-labeled ISO path still
+works and is preferred — the HTTP server is a backup delivery channel there.
+
+See [lessons-from-IDC.md](lessons-from-IDC.md) §1 for why we adopted this.

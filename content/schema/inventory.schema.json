@@ -13,6 +13,7 @@
       "properties": {
         "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,30}[a-z0-9]$" },
         "domain": { "type": "string", "format": "hostname" },
+        "timezone": { "type": "string", "default": "Asia/Seoul" },
         "kubernetes": {
           "type": "object",
           "required": ["distro", "version", "cni"],
@@ -33,7 +34,12 @@
         "pod_cidr": { "type": "string" },
         "service_cidr": { "type": "string" },
         "vip": { "type": "string", "format": "ipv4" },
-        "lb_pool": { "type": "string", "pattern": "^[0-9.]+-[0-9.]+$" }
+        "lb_pool": { "type": "string", "pattern": "^[0-9.]+-[0-9.]+$" },
+        "ingress_lb_ip": { "type": "string", "format": "ipv4" },
+        "gateway": { "type": "string", "format": "ipv4" },
+        "nameservers": { "type": "array", "items": { "type": "string", "format": "ipv4" } },
+        "prefix_len": { "type": "integer", "minimum": 8, "maximum": 30, "default": 24 },
+        "cluster_prefix_len": { "type": "integer", "minimum": 8, "maximum": 30, "default": 24 }
       }
     },
     "target": {
@@ -59,6 +65,9 @@
         "properties": {
           "hostname": { "type": "string" },
           "ip": { "type": "string", "format": "ipv4" },
+          "cluster_ip": { "type": "string", "format": "ipv4", "description": "Optional Ceph cluster network IP (C-Net) for OSD nodes" },
+          "primary_mac": { "type": "string", "pattern": "^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$", "description": "Discovered after VM creation; bound in NM connection to survive multi-NIC additions" },
+          "network_interface": { "type": "string", "description": "Primary NIC name (default: ens192 for ESXi vmxnet3, eth0 for libvirt virtio)" },
           "roles": {
             "type": "array",
             "minItems": 1,
@@ -71,7 +80,8 @@
           "storage_devices": {
             "type": "array",
             "items": { "type": "string", "pattern": "^/dev/" }
-          }
+          },
+          "ssh_authorized_keys": { "type": "array", "items": { "type": "string" } }
         }
       }
     },

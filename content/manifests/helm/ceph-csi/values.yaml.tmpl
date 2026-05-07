@@ -1,24 +1,21 @@
-# ceph-csi-rbd values, rendered by Ansible from facts collected in 30-csi-ceph.yml.
+{{- /* ceph-csi-rbd Helm values, rendered by Ansible from facts gathered in 30-csi-ceph.yml. */ -}}
+{{- /* Reference: P:\K3s@IDC\manifests\ceph-csi-rbd\values.yaml (production). */ -}}
 csiConfig:
-  - clusterID: "{{ ceph_cluster_fsid }}"
+  - clusterID: "{{ '{{ ceph_cluster_fsid }}' }}"
     monitors:
-{{ for ep in ceph_mon_endpoints }}      - "{{ ep }}"
-{{ endfor }}
+{{- range .Cluster.Monitors }}
+      - "{{ . }}:3300"   # MON v2 endpoint
+{{- end }}
+    cephFS:
+      subvolumeGroup: "csi"
+
+nodeplugin:
+  tolerations:
+    - operator: Exists
 
 provisioner:
   replicaCount: 2
-
-storageClass:
-  create: true
-  name: ceph-rbd
-  clusterID: "{{ ceph_cluster_fsid }}"
-  pool: rbd
-  reclaimPolicy: Retain
-  allowVolumeExpansion: true
-  mountOptions: []
-
-secret:
-  create: true
-  name: csi-rbd-secret
-  userID: admin
-  userKey: "{{ ceph_admin_keyring_b64 | b64decode | regex_search('key = (\\S+)', '\\1') | first }}"
+  tolerations:
+    - key: "node-role.kubernetes.io/control-plane"
+      operator: Exists
+      effect: NoSchedule

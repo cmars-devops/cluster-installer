@@ -13,9 +13,10 @@ type Inventory struct {
 }
 
 type ClusterSpec struct {
-	Name       string    `yaml:"name" json:"name"`
-	Domain     string    `yaml:"domain" json:"domain"`
-	Kubernetes K8sSpec   `yaml:"kubernetes" json:"kubernetes"`
+	Name       string  `yaml:"name" json:"name"`
+	Domain     string  `yaml:"domain" json:"domain"`
+	Timezone   string  `yaml:"timezone,omitempty" json:"timezone,omitempty"`
+	Kubernetes K8sSpec `yaml:"kubernetes" json:"kubernetes"`
 }
 
 type K8sSpec struct {
@@ -25,13 +26,14 @@ type K8sSpec struct {
 }
 
 type NetworkSpec struct {
-	PodCIDR     string `yaml:"pod_cidr" json:"pod_cidr"`
-	ServiceCIDR string `yaml:"service_cidr" json:"service_cidr"`
-	VIP         string `yaml:"vip" json:"vip"`
-	LBPool      string `yaml:"lb_pool" json:"lb_pool"`
-	Gateway     string `yaml:"gateway,omitempty" json:"gateway,omitempty"`
-	DNS         string `yaml:"dns,omitempty" json:"dns,omitempty"`
-	PrefixLen   int    `yaml:"prefix_len,omitempty" json:"prefix_len,omitempty"`
+	PodCIDR          string   `yaml:"pod_cidr" json:"pod_cidr"`
+	ServiceCIDR      string   `yaml:"service_cidr" json:"service_cidr"`
+	VIP              string   `yaml:"vip" json:"vip"`
+	LBPool           string   `yaml:"lb_pool" json:"lb_pool"`
+	Gateway          string   `yaml:"gateway,omitempty" json:"gateway,omitempty"`
+	Nameservers      []string `yaml:"nameservers,omitempty" json:"nameservers,omitempty"`
+	PrefixLen        int      `yaml:"prefix_len,omitempty" json:"prefix_len,omitempty"`
+	ClusterPrefixLen int      `yaml:"cluster_prefix_len,omitempty" json:"cluster_prefix_len,omitempty"`
 }
 
 type TargetSpec struct {
@@ -44,16 +46,18 @@ type TargetSpec struct {
 }
 
 type NodeSpec struct {
-	Hostname        string   `yaml:"hostname" json:"hostname"`
-	IP              string   `yaml:"ip" json:"ip"`
-	Roles           []string `yaml:"roles" json:"roles"`
-	OS              string   `yaml:"os" json:"os"` // microos | leap | tumbleweed
-	CPU             int      `yaml:"cpu,omitempty" json:"cpu,omitempty"`
-	MemoryGB        int      `yaml:"memory_gb,omitempty" json:"memory_gb,omitempty"`
-	DiskGB          int      `yaml:"disk_gb,omitempty" json:"disk_gb,omitempty"`
-	StorageDevices  []string `yaml:"storage_devices,omitempty" json:"storage_devices,omitempty"`
-	NetworkIface    string   `yaml:"network_interface,omitempty" json:"network_interface,omitempty"`
-	SSHAuthKeys     []string `yaml:"ssh_authorized_keys,omitempty" json:"ssh_authorized_keys,omitempty"`
+	Hostname       string   `yaml:"hostname" json:"hostname"`
+	IP             string   `yaml:"ip" json:"ip"`
+	ClusterIP      string   `yaml:"cluster_ip,omitempty" json:"cluster_ip,omitempty"` // Ceph cluster network (C-Net)
+	Roles          []string `yaml:"roles" json:"roles"`
+	OS             string   `yaml:"os" json:"os"` // microos | leap | tumbleweed
+	CPU            int      `yaml:"cpu,omitempty" json:"cpu,omitempty"`
+	MemoryGB       int      `yaml:"memory_gb,omitempty" json:"memory_gb,omitempty"`
+	DiskGB         int      `yaml:"disk_gb,omitempty" json:"disk_gb,omitempty"`
+	StorageDevices []string `yaml:"storage_devices,omitempty" json:"storage_devices,omitempty"`
+	NetworkIface   string   `yaml:"network_interface,omitempty" json:"network_interface,omitempty"`
+	PrimaryMAC     string   `yaml:"primary_mac,omitempty" json:"primary_mac,omitempty"` // discovered post-VM-create
+	SSHAuthKeys    []string `yaml:"ssh_authorized_keys,omitempty" json:"ssh_authorized_keys,omitempty"`
 }
 
 // HasRole is a template helper.
@@ -83,6 +87,41 @@ func (n NodeSpec) NeedsCeph() bool {
 		}
 	}
 	return false
+}
+
+// NeedsCephOSD reports whether this node will host OSDs (gets data + WAL/DB devices).
+func (n NodeSpec) NeedsCephOSD() bool { return n.HasRole("ceph-osd") }
+
+// HasClusterNIC reports whether the node has a second NIC on the Ceph cluster network.
+func (n NodeSpec) HasClusterNIC() bool { return n.ClusterIP != "" }
+
+// NeedsK3sSELinux is true for Leap Micro nodes that will run K3s/RKE2 — those
+// must install k3s-selinux on first boot via transactional-update + reboot.
+func (n NodeSpec) NeedsK3sSELinux() bool {
+	if n.OS != "microos" {
+		return false
+	}
+	for _, r := range n.Roles {
+		if r == "control-plane" || r == "worker" || r == "etcd" {
+			return true
+		}
+	}
+	return false
+}
+
+// StorageDevicesJSON renders a Go-string-quoted JSON array for templates.
+func (n NodeSpec) StorageDevicesJSON() string {
+	if len(n.StorageDevices) == 0 {
+		return "[]"
+	}
+	out := "["
+	for i, d := range n.StorageDevices {
+		if i > 0 {
+			out += ", "
+		}
+		out += `"` + d + `"`
+	}
+	return out + "]"
 }
 
 type CephSpec struct {
