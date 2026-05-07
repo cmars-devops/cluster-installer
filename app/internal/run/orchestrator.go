@@ -67,6 +67,18 @@ func (o *Orchestrator) Apply(ctx context.Context) error {
 		}
 	}()
 
+	// Pre-allocate MACs so seeds and tfvars see the same value. Idempotent:
+	// nodes that already carry a MAC (e.g. from a resumed run) are left
+	// untouched. Persist any change to run.json before stages start.
+	if changed := ensureNodeMACs(&o.Inventory); changed {
+		if err := o.Store.Update(o.Run.ID, func(r *state.Run) {
+			r.Inventory = o.Inventory
+		}); err != nil {
+			return fmt.Errorf("persist mac allocation: %w", err)
+		}
+		o.emit("run:line", "→ pre-allocated MACs for seed/TF binding")
+	}
+
 	for _, st := range o.pipelineStages() {
 		if err := ctx.Err(); err != nil {
 			return o.fail(st.name, err)
