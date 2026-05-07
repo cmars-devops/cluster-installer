@@ -11,6 +11,7 @@ import (
 	"github.com/cmars-devops/cluster-installer/internal/inventory"
 	"github.com/cmars-devops/cluster-installer/internal/logging"
 	"github.com/cmars-devops/cluster-installer/internal/run"
+	"github.com/cmars-devops/cluster-installer/internal/runner/esxi"
 	"github.com/cmars-devops/cluster-installer/internal/runtime"
 	"github.com/cmars-devops/cluster-installer/internal/state"
 )
@@ -119,4 +120,13 @@ func (a *App) ResumeRun(runID string) (state.Run, error) {
 // ListRuns returns the recent runs for the dashboard.
 func (a *App) ListRuns() ([]state.RunSummary, error) {
 	return a.store.List()
+}
+
+// DiscoverESXi connects to the supplied ESXi/vCenter target and returns the
+// resource catalog the wizard's Step 2 displays as dropdowns (datastores,
+// networks, host info). Errors are encoded into the Discovery struct
+// rather than thrown so the frontend can render them inline.
+func (a *App) DiscoverESXi(target inventory.TargetSpec) esxi.Discovery {
+	a.log.Info("esxi.discover", "endpoint", target.Endpoint, "user", target.Username)
+	return esxi.Discover(a.ctx, target)
 }

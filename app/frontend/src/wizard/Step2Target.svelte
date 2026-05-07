@@ -6,6 +6,7 @@
   import StepNav from '../lib/ui/StepNav.svelte';
   import Badge from '../lib/ui/Badge.svelte';
   import { wizardStore } from '../stores/wizard';
+  import { api, type ESXiDiscovery } from '../lib/api';
 
   type TargetType = 'libvirt' | 'proxmox' | 'esxi';
 
@@ -13,11 +14,12 @@
   let testing = $state(false);
   let testResult = $state<{ ok: boolean; msg: string } | null>(null);
 
+  // ESXi discovery state — populated by the "연결 + 리소스 가져오기" button.
+  let discovery = $state<ESXiDiscovery | null>(null);
+  let manualDS = $state(false);   // toggle: dropdown vs free-text for datastore
+  let manualNet = $state(false);  // …same for network
+
   function setType(t: TargetType) {
-    // Immutable update — replace the inventory.target object so the auto-
-    // subscribed $derived in this component sees a new reference and
-    // re-renders. (Mutating in place + returning the same ref leaves the
-    // .active class / form section frozen on whatever was first selected.)
     wizardStore.update((s) => ({
       ...s,
       inventory: {
@@ -25,7 +27,6 @@
         target: {
           ...s.inventory.target,
           type: t,
-          // ESXi-specific sensible defaults applied on first pick of that type.
           ...(t === 'esxi' && !s.inventory.target.username ? { username: 'root' } : {}),
           ...(t === 'esxi' && !s.inventory.target.tls_insecure ? { tls_insecure: true } : {}),
           ...(t === 'esxi' && !s.inventory.target.network ? { network: 'VM Network' } : {})
@@ -33,25 +34,51 @@
       }
     }));
     testResult = null;
+    discovery = null;
   }
 
   async function testConnection() {
     testing = true; testResult = null;
-    // TODO(Phase 2): wire to a Go backend method that does the appropriate
-    // probe per type (libvirt-go for libvirt URI, GET /api2/json/version for
-    // Proxmox, govmomi NewClient for ESXi). For now we just sanity-check the
-    // form filled-out state.
-    await new Promise((r) => setTimeout(r, 600));
+    await new Promise((r) => setTimeout(r, 400));
     if (!target.endpoint) {
       testResult = { ok: false, msg: 'Endpoint required' };
-    } else if (target.type === 'esxi' && !target.password && !target.ssh_key) {
-      testResult = { ok: false, msg: 'ESXi: provide either root password or SSH key' };
     } else if (target.type === 'proxmox' && !target.api_token) {
       testResult = { ok: false, msg: 'Proxmox: API token required' };
     } else {
-      testResult = { ok: true, msg: $_('step2.connOk') + ' (preview only — backend probe lands in Phase 2)' };
+      testResult = { ok: true, msg: $_('step2.connOk') + ' (preview only)' };
     }
     testing = false;
+  }
+
+  async function discoverEsxi() {
+    if (!target.endpoint || !target.password) {
+      discovery = { ok: false, error: 'Endpoint + root password required first.' };
+      return;
+    }
+    testing = true;
+    discovery = null;
+    discovery = await api.discoverEsxi({
+      type: 'esxi',
+      endpoint: target.endpoint,
+      username: target.username || 'root',
+      password: target.password,
+      ssh_key: target.ssh_key,
+      tls_insecure: target.tls_insecure
+    });
+    testing = false;
+  }
+
+  function pickDatastore(name: string) {
+    wizardStore.update((s) => ({
+      ...s,
+      inventory: { ...s.inventory, target: { ...s.inventory.target, datastore: name } }
+    }));
+  }
+  function pickNetwork(name: string) {
+    wizardStore.update((s) => ({
+      ...s,
+      inventory: { ...s.inventory, target: { ...s.inventory.target, network: name } }
+    }));
   }
 
   const canAdvance = true;
@@ -79,7 +106,6 @@
   </div>
 </Section>
 
-<!-- ──────────── libvirt ──────────── -->
 {#if target.type === 'libvirt'}
   <Section title={$_('step2.libvirt')}>
     <Field label={$_('step2.endpoint')} hint={$_('step2.endpointHintLibvirt')} required>
@@ -90,9 +116,16 @@
       <input bind:value={$wizardStore.inventory.target.ssh_key}
              placeholder="C:\Users\you\.ssh\id_ed25519" />
     </Field>
+    <div class="row">
+      <Button variant="secondary" disabled={testing || !target.endpoint} onclick={testConnection}>
+        {testing ? $_('common.loading') : $_('step2.testConn')}
+      </Button>
+      {#if testResult}
+        <Badge tone={testResult.ok ? 'success' : 'danger'}>{testResult.msg}</Badge>
+      {/if}
+    </div>
   </Section>
 
-<!-- ──────────── proxmox ──────────── -->
 {:else if target.type === 'proxmox'}
   <Section title={$_('step2.proxmox')}>
     <Field label={$_('step2.endpoint')} hint={$_('step2.endpointHintProxmox')} required>
@@ -100,17 +133,22 @@
              placeholder="https://pve1.example.com:8006/" />
     </Field>
     <Field label={$_('step2.apiToken')} hint={$_('step2.apiTokenHint')} required>
-      <input bind:value={$wizardStore.inventory.target.api_token}
-             type="password"
-             placeholder="root@pam!installer=…" />
+      <input bind:value={$wizardStore.inventory.target.api_token} type="password" placeholder="root@pam!installer=…" />
     </Field>
     <label class="checkbox">
       <input type="checkbox" bind:checked={$wizardStore.inventory.target.tls_insecure} />
       <span>{$_('step2.tlsInsecure')}</span>
     </label>
+    <div class="row">
+      <Button variant="secondary" disabled={testing || !target.endpoint} onclick={testConnection}>
+        {testing ? $_('common.loading') : $_('step2.testConn')}
+      </Button>
+      {#if testResult}
+        <Badge tone={testResult.ok ? 'success' : 'danger'}>{testResult.msg}</Badge>
+      {/if}
+    </div>
   </Section>
 
-<!-- ──────────── esxi ──────────── -->
 {:else if target.type === 'esxi'}
   <Section title={$_('step2.esxi')}>
     <Field label={$_('step2.endpoint')} hint={$_('step2.endpointHintEsxi')} required>
@@ -129,49 +167,120 @@
       <input bind:value={$wizardStore.inventory.target.ssh_key}
              placeholder="(optional) C:\Users\you\.ssh\id_ed25519" />
     </Field>
-
-    <h4 class="subhead">ESXi 리소스 배치</h4>
-    <div class="grid-2">
-      <Field label={$_('step2.datastore')} hint={$_('step2.datastoreHint')} required>
-        <input bind:value={$wizardStore.inventory.target.datastore}
-               placeholder="SSD-RAID0-4Ti-02" />
-      </Field>
-      <Field label={$_('step2.isoDatastore')} hint={$_('step2.isoDatastoreHint')}>
-        <input bind:value={$wizardStore.inventory.target.iso_datastore}
-               placeholder="(blank → same as above)" />
-      </Field>
-    </div>
-    <Field label={$_('step2.network')} hint={$_('step2.networkHint')} required>
-      <input bind:value={$wizardStore.inventory.target.network} placeholder="VM Network" />
-    </Field>
-
     <label class="checkbox">
       <input type="checkbox" bind:checked={$wizardStore.inventory.target.tls_insecure} />
       <span>{$_('step2.tlsInsecureEsxi')}</span>
     </label>
 
-    <div class="warn">
-      ⚠ Phase 1 v1 타겟은 libvirt + Proxmox 우선입니다. ESXi 백엔드(govmomi 어댑터)는
-      v2에서 활성화됩니다 — 인벤토리는 지금 저장되지만, Apply 시점에 명확한 안내와 함께
-      중단됩니다. 자세히는 <code>docs/phase-1-open-items.md</code>.
+    <div class="row">
+      <Button variant="primary"
+              disabled={testing || !target.endpoint || !target.password}
+              onclick={discoverEsxi}>
+        {testing ? $_('step2.discovering') : $_('step2.discover')}
+      </Button>
+      {#if discovery && !discovery.ok}
+        <Badge tone="danger">{discovery.error}</Badge>
+      {/if}
     </div>
   </Section>
+
+  {#if discovery?.ok && discovery.host}
+    <Section title={$_('step2.discovered')}
+             subtitle="{discovery.host.name} · ESXi {discovery.host.version} (build {discovery.host.build})">
+      <div class="discovered-grid">
+        <div class="metric">
+          <span class="metric-label">{$_('step2.discoveredHost')}</span>
+          <code>{discovery.host.name}</code>
+          <span class="metric-sub">{discovery.host.api_type === 'VirtualCenter' ? 'vCenter' : 'standalone ESXi'}</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">{$_('step2.discoveredVersion')}</span>
+          <code>{discovery.host.version}</code>
+          <span class="metric-sub">build {discovery.host.build}</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Datastores</span>
+          <code>{discovery.datastores?.length ?? 0}</code>
+          <span class="metric-sub">{(discovery.datastores ?? []).filter(d => d.accessible).length} accessible</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Networks</span>
+          <code>{discovery.networks?.length ?? 0}</code>
+          <span class="metric-sub">port groups</span>
+        </div>
+      </div>
+    </Section>
+  {/if}
+
+  <Section title="ESXi 리소스 배치">
+    <!-- ── datastore ───────────────────────────────────────── -->
+    <Field label={$_('step2.datastore')} hint={discovery?.ok ? '' : $_('step2.datastoreHint')} required>
+      {#if discovery?.ok && discovery.datastores && !manualDS}
+        <select bind:value={$wizardStore.inventory.target.datastore}>
+          <option value="">— {$_('step2.datastorePicker')} —</option>
+          {#each discovery.datastores.filter(d => d.accessible) as ds}
+            <option value={ds.name}>
+              {ds.name}  ({ds.type}, {ds.free_gb.toFixed(0)} / {ds.capacity_gb.toFixed(0)} GB {$_('step2.freeOf')})
+            </option>
+          {/each}
+        </select>
+        <button class="link" onclick={() => (manualDS = true)} type="button">{$_('step2.manualEntry')}</button>
+      {:else}
+        <input bind:value={$wizardStore.inventory.target.datastore} placeholder="SSD-RAID0-4Ti-02" />
+        {#if discovery?.ok}
+          <button class="link" onclick={() => (manualDS = false)} type="button">← back to picker</button>
+        {/if}
+      {/if}
+    </Field>
+
+    <Field label={$_('step2.isoDatastore')} hint={$_('step2.isoDatastoreHint')}>
+      {#if discovery?.ok && discovery.datastores}
+        <select bind:value={$wizardStore.inventory.target.iso_datastore}>
+          <option value="">(blank → same as above)</option>
+          {#each discovery.datastores.filter(d => d.accessible) as ds}
+            <option value={ds.name}>{ds.name}  ({ds.free_gb.toFixed(0)} GB free)</option>
+          {/each}
+        </select>
+      {:else}
+        <input bind:value={$wizardStore.inventory.target.iso_datastore} placeholder="(blank → same as above)" />
+      {/if}
+    </Field>
+
+    <!-- ── network ─────────────────────────────────────────── -->
+    <Field label={$_('step2.network')} hint={discovery?.ok ? '' : $_('step2.networkHint')} required>
+      {#if discovery?.ok && discovery.networks && !manualNet}
+        <select bind:value={$wizardStore.inventory.target.network}>
+          <option value="">— {$_('step2.networkPicker')} —</option>
+          {#each discovery.networks as net}
+            <option value={net.name}>
+              {net.name}{net.vswitch ? `  (${net.vswitch}` : ''}{net.vlan_id ? `, VLAN ${net.vlan_id}` : ''}{net.vswitch ? ')' : ''}
+            </option>
+          {/each}
+        </select>
+        <button class="link" onclick={() => (manualNet = true)} type="button">{$_('step2.manualEntry')}</button>
+      {:else}
+        <input bind:value={$wizardStore.inventory.target.network} placeholder="VM Network" />
+        {#if discovery?.ok}
+          <button class="link" onclick={() => (manualNet = false)} type="button">← back to picker</button>
+        {/if}
+      {/if}
+    </Field>
+
+    {#if !discovery?.ok}
+      <p class="muted">데이터스토어/네트워크 이름이 정확하지 않을 수 있습니다 — 위쪽 "{$_('step2.discover')}" 버튼을 누르면 ESXi에서 실제 이름을 가져와 드롭다운으로 선택하실 수 있습니다.</p>
+    {/if}
+  </Section>
+
+  <div class="warn">
+    ⚠ Phase 1에서는 인벤토리만 캡처되고 govmomi 백엔드는 v2에서 활성화됩니다.
+    Discovery 버튼은 dev 모드에서 mock 데이터를 반환합니다 (실제 ESXi 응답 형식과 동일).
+  </div>
 {/if}
 
-<!-- ──────────── shared ──────────── -->
 <Section title="HTTP server">
   <Field label={$_('step2.advertiseIP')} hint={$_('step2.advertiseIPHint')}>
     <input bind:value={$wizardStore.inventory.target.advertise_ip} placeholder="(auto)" />
   </Field>
-
-  <div class="row">
-    <Button variant="secondary" disabled={testing} onclick={testConnection}>
-      {testing ? $_('common.loading') : $_('step2.testConn')}
-    </Button>
-    {#if testResult}
-      <Badge tone={testResult.ok ? 'success' : 'danger'}>{testResult.msg}</Badge>
-    {/if}
-  </div>
 </Section>
 
 <StepNav canAdvance={canAdvance} />
@@ -193,15 +302,27 @@
   .target-card span { font-size: 0.78rem; color: #a1a1aa; line-height: 1.4; }
 
   .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
-  .subhead { font-size: 0.8rem; color: #a1a1aa; font-weight: 500; margin: 0.5rem 0 0;
-             text-transform: uppercase; letter-spacing: 0.05em; }
-  .row { display: flex; gap: 0.75rem; align-items: center; }
+  .row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
   .checkbox { display: flex; gap: 0.5rem; align-items: center; font-size: 0.85rem;
               color: #d4d4d8; cursor: pointer; }
   .checkbox input { accent-color: #3b82f6; }
-  .warn { margin-top: 0.5rem; padding: 0.6rem 0.8rem; background: #292524;
+  .muted { color: #71717a; font-size: 0.8rem; line-height: 1.5; margin: 0.5rem 0 0; }
+
+  .discovered-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75rem; }
+  @media (max-width: 800px) { .discovered-grid { grid-template-columns: repeat(2, 1fr); } }
+  .metric { display: flex; flex-direction: column; gap: 0.25rem;
+            background: #0a0a0c; border: 1px solid #2a2a30;
+            border-radius: 5px; padding: 0.6rem 0.8rem; }
+  .metric-label { font-size: 0.7rem; color: #71717a; text-transform: uppercase; letter-spacing: 0.05em; }
+  .metric code { background: transparent; padding: 0; color: #93c5fd; font-size: 0.95rem; font-weight: 500; }
+  .metric-sub { font-size: 0.7rem; color: #a1a1aa; }
+
+  .link { background: none; border: none; color: #60a5fa; cursor: pointer;
+          font-size: 0.75rem; padding: 0.2rem 0; margin-left: 0.5rem;
+          font-family: inherit; }
+  .link:hover { text-decoration: underline; }
+
+  .warn { margin: 0.5rem 0 1.25rem; padding: 0.6rem 0.8rem; background: #292524;
           border: 1px solid #78350f; border-radius: 5px; color: #fde68a; font-size: 0.78rem;
           line-height: 1.5; }
-  .warn code { background: #44403c; padding: 0.05rem 0.3rem; border-radius: 3px;
-               font-family: ui-monospace, monospace; }
 </style>

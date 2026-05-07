@@ -19,6 +19,31 @@ export type Status = {
 
 export type ValidationResult = { valid: boolean; errors: string[] };
 
+// Result of probing an ESXi host (or vCenter) and listing the resources
+// the operator will pick from. Returned by App.DiscoverESXi(target).
+export type ESXiDiscovery = {
+  ok: boolean;
+  error?: string;
+  host?: {
+    name: string;
+    version: string;
+    build: string;
+    api_type: 'HostAgent' | 'VirtualCenter';
+  };
+  datastores?: Array<{
+    name: string;
+    type: string;          // VMFS / NFS / vSAN / …
+    capacity_gb: number;
+    free_gb: number;
+    accessible: boolean;
+  }>;
+  networks?: Array<{
+    name: string;
+    vswitch?: string;
+    vlan_id?: number;
+  }>;
+};
+
 declare global {
   interface Window {
     go?: { main?: { App?: Record<string, (...args: any[]) => Promise<any>> } };
@@ -65,4 +90,31 @@ export const api = {
   listRuns(): Promise<unknown[]> {
     return call<unknown[]>('ListRuns', [], []);
   },
+
+  // Probe an ESXi/vCenter endpoint with the given target spec, return
+  // the resources the operator should choose from (datastores, networks).
+  // In dev/browser-only mode the stub returns realistic mock data so the
+  // discovery → dropdown UX can be exercised without the Go backend.
+  discoverEsxi(target: unknown): Promise<ESXiDiscovery> {
+    return call<ESXiDiscovery>('DiscoverESXi', [target], {
+      ok: true,
+      host: {
+        name: 'esxi-r760-01.local',
+        version: '8.0.2',
+        build: '23299997',
+        api_type: 'HostAgent'
+      },
+      datastores: [
+        { name: 'datastore1',           type: 'VMFS', capacity_gb:  500, free_gb:  412, accessible: true },
+        { name: 'SSD-RAID0-4Ti-02',     type: 'VMFS', capacity_gb: 4096, free_gb: 2548, accessible: true },
+        { name: 'SSD-RAID0-2Ti-01',     type: 'VMFS', capacity_gb: 2048, free_gb: 1530, accessible: true },
+        { name: 'NFS-iso',              type: 'NFS',  capacity_gb:  100, free_gb:   73, accessible: true }
+      ],
+      networks: [
+        { name: 'VM Network',           vswitch: 'vSwitch0' },
+        { name: 'Management Network',   vswitch: 'vSwitch0' },
+        { name: 'Storage-Net (VLAN100)', vswitch: 'vSwitch1', vlan_id: 100 }
+      ]
+    });
+  }
 };
