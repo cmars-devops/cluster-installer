@@ -49,27 +49,39 @@ type proxmoxNodeVar struct {
 
 // esxiNodeVar matches content/terraform/stacks/esxi/main.tf > variable "nodes".
 //
-// SeedISOPath / InstallISOPath are datastore-relative (the orchestrator
-// uploads the bytes to ISODatastore via govmomi pre-TF; the path here
-// is what vSphere consumes in vsphere_virtual_machine.cdrom.path).
+// New schema (multi-disk + multi-NIC):
+//   disks: ordered list, [0] is the OS install disk; rest are blank
+//          extras the guest sees as /dev/sd[bcd...].
+//   nics:  ordered list, [0] is the primary (verify SSH dials its IP,
+//          netplan default route lives here unless overridden).
 //
-// InstallISOPath is empty for MicroOS (Combustion does the work via
-// the seed CD); set for Leap/Tumbleweed where the orchestrator rebuilt
-// the netinstall ISO with the kernel cmdline pointing at our
-// HTTP-served Agama profile.
+// SeedISOPath / InstallISOPath stay scalar — at most two CD-ROMs per
+// VM regardless of disk/NIC count. Datastore-relative paths consumed
+// by vsphere_virtual_machine.cdrom.path.
 type esxiNodeVar struct {
-	Name             string `json:"name"`
-	MemoryMB         int    `json:"memory_mb"`
-	VCPU             int    `json:"vcpu"`
-	DiskGB           int    `json:"disk_gb"`
-	ExtraDisksGB     []int  `json:"extra_disks_gb"`
-	SeedISOPath      string `json:"seed_iso_path"`
-	InstallISOPath   string `json:"install_iso_path,omitempty"`
-	MAC              string `json:"mac,omitempty"`
-	Datastore        string `json:"datastore,omitempty"`      // per-node disk datastore override
-	ISODatastore     string `json:"iso_datastore,omitempty"`  // per-node ISO datastore override
-	DiskProvisioning string `json:"disk_provisioning,omitempty"`
-	GuestID          string `json:"guest_id,omitempty"`
+	Name           string        `json:"name"`
+	MemoryMB       int           `json:"memory_mb"`
+	VCPU           int           `json:"vcpu"`
+	Disks          []esxiDiskVar `json:"disks"`
+	NICs           []esxiNICVar  `json:"nics"`
+	SeedISOPath    string        `json:"seed_iso_path"`
+	InstallISOPath string        `json:"install_iso_path,omitempty"`
+	GuestID        string        `json:"guest_id,omitempty"`
+}
+
+// esxiDiskVar matches the `disk` object schema in modules/esxi-vm.
+type esxiDiskVar struct {
+	SizeGB       int    `json:"size_gb"`
+	Datastore    string `json:"datastore,omitempty"`     // empty → use VM default
+	Provisioning string `json:"provisioning,omitempty"`  // thin / thick / thick-eager
+	Label        string `json:"label,omitempty"`
+}
+
+// esxiNICVar matches the `nic` object schema in modules/esxi-vm.
+type esxiNICVar struct {
+	Network string `json:"network"` // ESXi port-group name
+	MAC     string `json:"mac,omitempty"`
+	Label   string `json:"label,omitempty"`
 }
 
 // renderTFVars writes runs/<id>/terraform/tfvars.json. Returns the path.
@@ -230,17 +242,15 @@ func (o *Orchestrator) writeESXiTFVars(path string) error {
 	devVM := o.Inventory.Cluster.IsDevVM()
 	nodes := make([]esxiNodeVar, 0, len(o.Inventory.Nodes))
 	for _, n := range o.Inventory.Nodes {
-		// Per-node datastore. Cluster mode REQUIRES it (no silent
-		// cluster-level fallback — that used to cause space-exhaustion
-		// when every OSD landed on the smallest array). dev-vm mode
-		// falls back to target.datastore (Step 4 → datastore picker, OR
-		// Step 2 ESXi defaults), since picking once is reasonable for a
-		// single-VM run.
-		ds := n.Datastore
-		if ds == "" && devVM {
-			ds = o.Inventory.Target.Datastore
+		// Per-node primary datastore. Cluster mode REQUIRES it (no
+		// silent cluster-level fallback — that used to cause
+		// space-exhaustion when every OSD landed on the smallest
+		// array). dev-vm falls back to target.datastore.
+		primaryDS := n.Datastore
+		if primaryDS == "" && devVM {
+			primaryDS = o.Inventory.Target.Datastore
 		}
-		if ds == "" {
+		if primaryDS == "" {
 			return fmt.Errorf("node %q: datastore is required (Step 4 → \"VM 디스크 데이터스토어\")", n.Hostname)
 		}
 		// vSphere displays Name in its inventory tree. When the operator
@@ -250,16 +260,42 @@ func (o *Orchestrator) writeESXiTFVars(path string) error {
 		if vmName == "" {
 			vmName = n.Hostname
 		}
+
+		// Build the disk list — dev-vm UI populates n.Disks directly,
+		// cluster mode falls through EffectiveDisks() which reuses
+		// the legacy DiskGB / Ceph extraDisksFor helpers.
+		extras := extraDisksFor(n, o.Inventory.Ceph)
+		effDisks := n.EffectiveDisks(extras)
+		disks := make([]esxiDiskVar, 0, len(effDisks))
+		for _, d := range effDisks {
+			disks = append(disks, esxiDiskVar{
+				SizeGB:       d.SizeGB,
+				Datastore:    defaultStr(d.Datastore, primaryDS),
+				Provisioning: defaultStr(d.Provisioning, defaultStr(n.DiskProvisioning, "thin")),
+				Label:        d.Label,
+			})
+		}
+
+		// Build the NIC list. Same pattern: explicit n.NICs wins,
+		// otherwise synthesise a single NIC from target.Network +
+		// per-node primary MAC.
+		effNICs := n.EffectiveNICs(o.Inventory.Target.Network)
+		nics := make([]esxiNICVar, 0, len(effNICs))
+		for _, nic := range effNICs {
+			nics = append(nics, esxiNICVar{
+				Network: defaultStr(nic.Network, defaultStr(o.Inventory.Target.Network, "VM Network")),
+				MAC:     nic.MAC,
+				Label:   nic.Label,
+			})
+		}
+
 		nv := esxiNodeVar{
-			Name:             vmName,
-			MemoryMB:         defaultInt(n.MemoryGB*1024, 4096),
-			VCPU:             defaultInt(n.CPU, 2),
-			DiskGB:           defaultInt(n.DiskGB, 40),
-			ExtraDisksGB:     extraDisksFor(n, o.Inventory.Ceph),
-			MAC:              n.PrimaryMAC,
-			Datastore:        ds,
-			DiskProvisioning: defaultStr(n.DiskProvisioning, "thin"),
-			GuestID:          esxiGuestIDFor(n.OS),
+			Name:     vmName,
+			MemoryMB: defaultInt(n.MemoryGB*1024, 4096),
+			VCPU:     defaultInt(n.CPU, 2),
+			Disks:    disks,
+			NICs:     nics,
+			GuestID:  esxiGuestIDFor(n.OS),
 		}
 		// Per-node seed CD-ROM. Always present:
 		//   MicroOS  → Combustion+Ignition (the install payload itself)
@@ -454,6 +490,7 @@ func defaultStr(v, fallback string) string {
 	}
 	return v
 }
+
 
 func writeJSON(path string, v any) error {
 	raw, err := json.MarshalIndent(v, "", "  ")

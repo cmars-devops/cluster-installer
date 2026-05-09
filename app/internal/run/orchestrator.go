@@ -762,32 +762,104 @@ func rewriteUserDataNetwork(userData []byte, n inventory.NodeSpec, sctx seed.Con
 	if iface == "" {
 		iface = "ens192"
 	}
-	mac := n.PrimaryMAC
+
+	// Build effective NIC list. nics[0] always carries the primary
+	// gateway/nameservers (Network*Spec values are the cluster-wide
+	// defaults that apply to NIC[0] when the operator left per-NIC
+	// fields blank). Extra NICs only get static IP/prefix; the operator
+	// configures their routing rules in the guest if needed.
+	effNICs := n.EffectiveNICs("")
 
 	var b bytes.Buffer
 	b.WriteString("  network:\n")
 	b.WriteString("    version: 2\n")
 	b.WriteString("    ethernets:\n")
-	b.WriteString("      primary:\n")
-	b.WriteString("        match:\n")
-	b.WriteString(fmt.Sprintf("          macaddress: \"%s\"\n", mac))
-	b.WriteString(fmt.Sprintf("        set-name: %s\n", iface))
-	if n.IPMode == "dhcp" {
-		b.WriteString("        dhcp4: true\n")
-	} else {
+	for i, nic := range effNICs {
+		key := fmt.Sprintf("nic%d", i)
+		if i == 0 {
+			key = "primary"
+		}
+		// Each NIC gets its own set-name. NIC[0] keeps the canonical
+		// "ens192" so existing scripts/docs still work; subsequent
+		// NICs get "ens193", "ens194", … so the OS surface is
+		// predictable regardless of vSphere attach order.
+		setName := iface
+		if i > 0 {
+			setName = fmt.Sprintf("ens%d", 192+i)
+		}
+		mac := nic.MAC
+		if mac == "" && i == 0 {
+			mac = n.PrimaryMAC
+		}
+		mode := nic.IPMode
+		if mode == "" && i == 0 {
+			mode = n.IPMode
+		}
+		ip := nic.IP
+		if ip == "" && i == 0 {
+			ip = n.IP
+		}
+		prefix := nic.PrefixLen
+		if prefix == 0 {
+			prefix = sctx.Network.PrefixLen
+		}
+		gw := nic.Gateway
+		if gw == "" && i == 0 {
+			gw = sctx.Network.Gateway
+		}
+		ns := nic.Nameservers
+		if len(ns) == 0 && i == 0 {
+			ns = sctx.Network.Nameservers
+		}
+
+		b.WriteString(fmt.Sprintf("      %s:\n", key))
+		b.WriteString("        match:\n")
+		b.WriteString(fmt.Sprintf("          macaddress: \"%s\"\n", mac))
+		b.WriteString(fmt.Sprintf("        set-name: %s\n", setName))
+		// Extra NICs MUST be marked optional. Otherwise
+		// systemd-networkd-wait-online (which gates cloud-init's
+		// network stage AND boot in general) blocks indefinitely
+		// when ANY configured interface fails to come online —
+		// extremely common for a 2nd NIC on a port-group that has
+		// no DHCP server. The primary NIC stays mandatory so a
+		// genuine misconfiguration there fails fast and visibly
+		// instead of silently completing install with no reachable
+		// SSH (verify dials primary NIC's IP, so a half-up primary
+		// would just shift the failure mode further along).
+		if i > 0 {
+			b.WriteString("        optional: true\n")
+		}
+		if mode == "dhcp" {
+			b.WriteString("        dhcp4: true\n")
+			// Don't let a 2nd NIC's DHCP-supplied default route
+			// override the primary's. Only relevant on extras.
+			if i > 0 {
+				b.WriteString("        dhcp4-overrides:\n")
+				b.WriteString("          use-routes: false\n")
+			}
+			continue
+		}
+		// Static. Skip the block when no IP yet — netplan would error
+		// on an empty addresses list.
+		if ip == "" {
+			b.WriteString("        dhcp4: false\n")
+			continue
+		}
 		b.WriteString("        addresses:\n")
-		b.WriteString(fmt.Sprintf("          - \"%s/%d\"\n", n.IP, defaultPrefixLen(sctx.Network.PrefixLen)))
-		b.WriteString("        routes:\n")
-		b.WriteString("          - to: default\n")
-		b.WriteString(fmt.Sprintf("            via: %s\n", sctx.Network.Gateway))
-		if len(sctx.Network.Nameservers) > 0 {
+		b.WriteString(fmt.Sprintf("          - \"%s/%d\"\n", ip, defaultPrefixLen(prefix)))
+		if gw != "" {
+			b.WriteString("        routes:\n")
+			b.WriteString("          - to: default\n")
+			b.WriteString(fmt.Sprintf("            via: %s\n", gw))
+		}
+		if len(ns) > 0 {
 			b.WriteString("        nameservers:\n")
 			b.WriteString("          addresses: [")
-			for i, ns := range sctx.Network.Nameservers {
-				if i > 0 {
+			for j, n := range ns {
+				if j > 0 {
 					b.WriteString(", ")
 				}
-				b.WriteString(fmt.Sprintf("\"%s\"", ns))
+				b.WriteString(fmt.Sprintf("\"%s\"", n))
 			}
 			b.WriteString("]\n")
 		}

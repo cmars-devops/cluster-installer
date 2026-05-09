@@ -1,5 +1,7 @@
 package inventory
 
+import "fmt"
+
 // Inventory mirrors content/schema/inventory.schema.json. Keep these in sync;
 // the validator is the source of truth.
 type Inventory struct {
@@ -141,6 +143,52 @@ type TargetSpec struct {
 	AdvertiseIP string `yaml:"advertise_ip,omitempty" json:"advertise_ip,omitempty"`
 }
 
+// DiskSpec describes one virtual disk attached to a VM. The first disk
+// in NodeSpec.Disks is the OS install disk (where the autoinstall
+// formats and lays down /). Additional entries are extra blank
+// volumes the guest OS sees as /dev/sd[bcd...] etc.
+type DiskSpec struct {
+	SizeGB       int    `yaml:"size_gb" json:"size_gb"`
+	// Datastore overrides the VM-level datastore for THIS disk only.
+	// Empty = use the VM's primary datastore (Step 4's datastore
+	// picker). Common pattern: keep the OS disk on a fast SSD array
+	// and put bulk data disks on a larger/cheaper one.
+	Datastore    string `yaml:"datastore,omitempty"     json:"datastore,omitempty"`
+	// Provisioning overrides VM-level provisioning for THIS disk only.
+	// Same enum as NodeSpec.DiskProvisioning: thin / thick / thick-eager.
+	Provisioning string `yaml:"provisioning,omitempty"  json:"provisioning,omitempty"`
+	// Label is a free-form name shown in vSphere's hardware list. When
+	// empty the module picks "disk0", "disk1", … in order.
+	Label        string `yaml:"label,omitempty"         json:"label,omitempty"`
+}
+
+// NICSpec describes one virtual NIC attached to a VM. The first entry
+// is the primary — wait_ssh + verify dial its IP, late-commands run
+// against it, and it carries the default route by convention. Extra
+// entries get configured in netplan but the wizard doesn't touch
+// their routing rules — that's a per-deployment decision the operator
+// makes inside the guest.
+type NICSpec struct {
+	// Network is the ESXi port-group name (vSwitch port group). On
+	// libvirt this maps to the network name; on Proxmox to the bridge.
+	Network     string   `yaml:"network"                json:"network"`
+	// IPMode: "static" (default) or "dhcp". Per-NIC.
+	IPMode      string   `yaml:"ip_mode,omitempty"      json:"ip_mode,omitempty"`
+	// IP / PrefixLen / Gateway / Nameservers apply when IPMode=static.
+	IP          string   `yaml:"ip,omitempty"           json:"ip,omitempty"`
+	PrefixLen   int      `yaml:"prefix_len,omitempty"   json:"prefix_len,omitempty"`
+	Gateway     string   `yaml:"gateway,omitempty"      json:"gateway,omitempty"`
+	Nameservers []string `yaml:"nameservers,omitempty"  json:"nameservers,omitempty"`
+	// MAC is allocated by the orchestrator before TF apply via a
+	// deterministic hash of (cluster_name, hostname, nic_index) —
+	// makes redeploys reuse the same MAC, which keeps DHCP leases
+	// stable and lets the autoinstall match on it.
+	MAC         string   `yaml:"mac,omitempty"          json:"mac,omitempty"`
+	// Label is a free-form name. When empty the module picks
+	// "nic0", "nic1", … in order.
+	Label       string   `yaml:"label,omitempty"        json:"label,omitempty"`
+}
+
 type NodeSpec struct {
 	Hostname       string   `yaml:"hostname" json:"hostname"`
 	// DisplayName is the label vSphere shows in its inventory tree
@@ -150,6 +198,18 @@ type NodeSpec struct {
 	// "DEV-DEVVM-01 (cmars)" in vSphere but plain "devvm-01" inside
 	// the OS).
 	DisplayName    string   `yaml:"display_name,omitempty" json:"display_name,omitempty"`
+	// Disks lists every virtual disk to attach, OS install disk first.
+	// When empty, the legacy single-disk fields (DiskGB +
+	// Datastore/DiskProvisioning + the cluster Ceph helpers
+	// data_devices/db_devices/wal_devices) are translated to a Disks
+	// list at tfvars-render time. dev-vm UI sets this directly so
+	// each disk can have its own datastore + provisioning.
+	Disks          []DiskSpec `yaml:"disks,omitempty" json:"disks,omitempty"`
+	// NICs lists every virtual NIC to attach, primary first. When
+	// empty, a single NIC is synthesised from target.Network +
+	// per-node IP/PrimaryMAC at tfvars-render time. dev-vm UI sets
+	// this directly when the operator wants more than one NIC.
+	NICs           []NICSpec `yaml:"nics,omitempty"  json:"nics,omitempty"`
 	IP             string   `yaml:"ip" json:"ip"`
 	ClusterIP      string   `yaml:"cluster_ip,omitempty" json:"cluster_ip,omitempty"` // Ceph cluster network (C-Net)
 	Roles          []string `yaml:"roles" json:"roles"`
@@ -201,6 +261,68 @@ type NodeSpec struct {
 }
 
 // HasRole is a template helper.
+// EffectiveDisks returns the canonical disk list for this node. When
+// NodeSpec.Disks is set (dev-vm UI populates it directly) it's used
+// verbatim. Otherwise the function synthesises a list from the legacy
+// single-disk fields (DiskGB + per-node Datastore/DiskProvisioning)
+// plus any cluster-mode Ceph extras computed by extraDisksFor() in
+// run/tfvars.go. Centralising this here keeps cluster + dev-vm flows
+// on one downstream pipeline.
+//
+// extras is the ordered list of additional disk sizes the cluster
+// path computes from data/db/wal devices. It's passed in instead of
+// being recomputed here because the Ceph helpers live in the run
+// package and we don't want a cyclic import.
+func (n NodeSpec) EffectiveDisks(extras []int) []DiskSpec {
+	if len(n.Disks) > 0 {
+		return n.Disks
+	}
+	rootSize := n.DiskGB
+	if rootSize == 0 {
+		rootSize = 40
+	}
+	out := []DiskSpec{{
+		SizeGB:       rootSize,
+		Datastore:    n.Datastore,
+		Provisioning: n.DiskProvisioning,
+		Label:        "disk0",
+	}}
+	for i, gb := range extras {
+		out = append(out, DiskSpec{
+			SizeGB:       gb,
+			Datastore:    n.Datastore,
+			Provisioning: n.DiskProvisioning,
+			Label:        fmt.Sprintf("disk%d", i+1),
+		})
+	}
+	return out
+}
+
+// EffectiveNICs returns the canonical NIC list. When NodeSpec.NICs is
+// set (dev-vm multi-NIC UI) it's used verbatim. Otherwise a single
+// primary NIC is synthesised from target.Network + per-node IP /
+// IPMode / PrimaryMAC. The cluster path always falls into the
+// synthesised case (single NIC per node) which keeps every existing
+// inventory backward-compatible.
+//
+// targetNetwork is target.Network (the ESXi port-group from Step 2)
+// — the synthesised NIC inherits this when no per-node override
+// exists. Cluster prefix_len + gateway + nameservers come from the
+// shared NetworkSpec; the caller wires those in separately when
+// rendering netplan, since they live outside NodeSpec.
+func (n NodeSpec) EffectiveNICs(targetNetwork string) []NICSpec {
+	if len(n.NICs) > 0 {
+		return n.NICs
+	}
+	return []NICSpec{{
+		Network: targetNetwork,
+		IPMode:  n.IPMode,
+		IP:      n.IP,
+		MAC:     n.PrimaryMAC,
+		Label:   "nic0",
+	}}
+}
+
 func (n NodeSpec) HasRole(role string) bool {
 	for _, r := range n.Roles {
 		if r == role {

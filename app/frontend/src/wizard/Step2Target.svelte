@@ -6,9 +6,23 @@
   import StepNav from '../lib/ui/StepNav.svelte';
   import Badge from '../lib/ui/Badge.svelte';
   import { wizardStore } from '../stores/wizard';
-  import { api, type ESXiDiscovery } from '../lib/api';
+  import { api, type ESXiDiscovery, type SavedTarget } from '../lib/api';
+  import { onMount } from 'svelte';
 
   type TargetType = 'libvirt' | 'proxmox' | 'esxi';
+
+  // Friendly type labels — matches the 3-card row at the top of the
+  // page so the saved-server dropdown shows "VMware ESXi (vSphere API
+  // + SSH)" instead of the raw enum "esxi". i18n-aware: $_ resolves
+  // to the right locale at render time.
+  function targetTypeLabel(t: string): string {
+    switch (t) {
+      case 'esxi':    return $_('step2.esxi');
+      case 'libvirt': return $_('step2.libvirt');
+      case 'proxmox': return $_('step2.proxmox');
+      default:        return t;
+    }
+  }
 
   const target = $derived($wizardStore.inventory.target);
 
@@ -18,6 +32,109 @@
   let discovery = $state<ESXiDiscovery | null>(null);
   let manualDS = $state(false);
   let manualNet = $state(false);
+
+  // ── Saved hypervisor registry ──────────────────────────────────────
+  // List loaded once on mount; refreshed after every Save/Delete so the
+  // dropdown reflects the latest state. selectedSavedID drives the
+  // <select>; setting it to '' returns to manual-entry mode.
+  let savedTargets = $state<SavedTarget[]>([]);
+  let selectedSavedID = $state<string>('');
+  let savingTarget = $state(false);
+  let saveError = $state<string | null>(null);
+
+  onMount(async () => {
+    try {
+      savedTargets = await api.listSavedTargets();
+    } catch (e) {
+      console.warn('[savedTargets] list failed:', e);
+    }
+  });
+
+  async function refreshSaved() {
+    try {
+      savedTargets = await api.listSavedTargets();
+    } catch (e) {
+      console.warn('[savedTargets] refresh failed:', e);
+    }
+  }
+
+  // Apply a saved target's fields onto the in-memory inventory.target.
+  // Bumps last-used-at so the picker re-sorts on next render.
+  async function applySavedTarget(id: string) {
+    const t = savedTargets.find((x) => x.id === id);
+    if (!t) { selectedSavedID = ''; return; }
+    selectedSavedID = id;
+    updateTarget({
+      type: (t.type as TargetType) ?? target.type,
+      endpoint: t.endpoint ?? '',
+      username: t.username ?? '',
+      password: t.password ?? '',
+      ssh_key: t.ssh_key ?? '',
+      api_token: t.api_token ?? '',
+      tls_insecure: t.tls_insecure ?? true,
+      datastore: t.datastore ?? '',
+      iso_datastore: t.iso_datastore ?? '',
+      network: t.network ?? ''
+    });
+    // Discovery cache is per-endpoint; clear so user re-runs against the
+    // newly-selected target rather than seeing stale resources.
+    discovery = null;
+    testResult = null;
+    try { await api.touchSavedTarget(id); refreshSaved(); } catch {}
+  }
+
+  // Save current target form as a new saved-target row (or update the
+  // selected one if selectedSavedID is set). Captures every field
+  // including discovered datastore/network defaults — picking the same
+  // row next time skips both manual entry AND re-discovery.
+  async function saveCurrentTarget() {
+    saveError = null;
+    if (!target.endpoint) {
+      saveError = '엔드포인트를 먼저 입력해주세요.';
+      return;
+    }
+    savingTarget = true;
+    try {
+      const existing = savedTargets.find((x) => x.id === selectedSavedID);
+      const labelDefault = existing?.label || `${targetTypeLabel(target.type)} · ${target.endpoint}`;
+      const label = window.prompt('저장할 이름 (예: "ESXi DEV (lab)")', labelDefault) ?? labelDefault;
+      const payload: SavedTarget = {
+        id: selectedSavedID || '',
+        label: label.trim() || labelDefault,
+        type: target.type,
+        endpoint: target.endpoint,
+        username: target.username,
+        password: target.password,
+        ssh_key: target.ssh_key,
+        api_token: target.api_token,
+        tls_insecure: target.tls_insecure,
+        datastore: target.datastore,
+        iso_datastore: target.iso_datastore,
+        network: target.network
+      };
+      const saved = await api.saveTarget(payload);
+      selectedSavedID = saved.id;
+      await refreshSaved();
+    } catch (e) {
+      saveError = String(e);
+    } finally {
+      savingTarget = false;
+    }
+  }
+
+  async function deleteSelectedTarget() {
+    if (!selectedSavedID) return;
+    const t = savedTargets.find((x) => x.id === selectedSavedID);
+    if (!t) return;
+    if (!window.confirm(`'${t.label}' 항목을 삭제할까요?`)) return;
+    try {
+      await api.deleteSavedTarget(selectedSavedID);
+      selectedSavedID = '';
+      await refreshSaved();
+    } catch (e) {
+      saveError = String(e);
+    }
+  }
 
   // ── Single immutable updater for the target sub-tree.
   // Using bind:value to deep store paths in Svelte 5 runes mode mutates in
@@ -130,6 +247,40 @@
       <strong>{$_('step2.esxi')}</strong>
       <span>{$_('step2.esxiDesc')}</span>
     </button>
+  </div>
+</Section>
+
+<!-- 저장된 서버 picker — 이전에 사용한 하이퍼바이저 엔드포인트를
+     %LOCALAPPDATA%\cluster-installer\servers.json 에서 읽어와 드롭다운으로
+     보여준다. 선택 시 target.* 필드 일괄 채움. 저장된 항목이 없으면
+     섹션 자체가 단순 "현재 입력 저장" 버튼으로 축소되어 처음 사용자도
+     UX가 어색하지 않도록 한다. -->
+<Section title={$_('step2.savedServers')} subtitle={$_('step2.savedServersHint')}>
+  {#if savedTargets.length > 0}
+    <Field label={$_('step2.savedPick')}>
+      <div class="saved-row">
+        <select value={selectedSavedID}
+                onchange={(e) => applySavedTarget((e.target as HTMLSelectElement).value)}>
+          <option value="">— {$_('step2.savedPickerNew')} —</option>
+          {#each savedTargets as t}
+            <option value={t.id}>{t.label} — {targetTypeLabel(t.type)}</option>
+          {/each}
+        </select>
+        {#if selectedSavedID}
+          <Button variant="danger" onclick={deleteSelectedTarget}>{$_('step2.savedDelete')}</Button>
+        {/if}
+      </div>
+    </Field>
+  {/if}
+  <div class="saved-actions">
+    <Button variant="secondary" disabled={savingTarget || !target.endpoint}
+            onclick={saveCurrentTarget}>
+      {savingTarget ? $_('common.loading') : (selectedSavedID ? $_('step2.savedUpdate') : $_('step2.savedSaveNew'))}
+    </Button>
+    {#if saveError}<Badge tone="danger">{saveError}</Badge>{/if}
+    {#if !selectedSavedID && savedTargets.length === 0}
+      <span class="muted">{$_('step2.savedFirstHint')}</span>
+    {/if}
   </div>
 </Section>
 
@@ -396,4 +547,11 @@
   .help-body ol { margin: 0; padding-left: 1.25rem; }
   .help-body li { margin-bottom: 0.25rem; }
   .help-body strong { color: #93c5fd; }
+
+  /* Saved-target picker row */
+  .saved-row { display: flex; gap: 0.5rem; align-items: stretch; }
+  .saved-row select { flex: 1; }
+  .saved-actions { display: flex; gap: 0.6rem; align-items: center;
+                   margin-top: 0.5rem; flex-wrap: wrap; }
+  .saved-actions .muted { font-size: 0.78rem; color: #71717a; }
 </style>

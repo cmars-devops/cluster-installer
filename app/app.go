@@ -26,6 +26,15 @@ type App struct {
 	binaries embed.FS
 	log      *logging.Logger
 	store    *state.Store
+	// targets persists the operator's saved hypervisor endpoints
+	// (ESXi/libvirt/Proxmox) so Step 2 can offer a "pick from saved"
+	// dropdown alongside the manual-entry fields.
+	targets *state.TargetStore
+	// creds persists saved cluster_auth bags (sudo username + GitHub
+	// key import + raw SSH keys + console password) so Step 1 can
+	// offer the same "pick from saved" UX. Different lifecycle from
+	// targets, so kept in a separate file/store.
+	creds *state.CredentialStore
 
 	// runCancels tracks the cancel function for each in-flight ApplyRun so
 	// CancelRun(runID) can interrupt the pipeline. Protected by mu.
@@ -38,6 +47,8 @@ func NewApp(binaries embed.FS) *App {
 		binaries:   binaries,
 		log:        logging.New(),
 		store:      state.New(),
+		targets:    state.NewTargetStore(),
+		creds:      state.NewCredentialStore(),
 		runCancels: make(map[string]context.CancelFunc),
 	}
 }
@@ -310,6 +321,69 @@ func (a *App) ListRuns() ([]state.RunSummary, error) {
 // post-completion state that doesn't fit on the lighter RunSummary.
 func (a *App) GetRun(runID string) (state.Run, error) {
 	return a.store.Load(runID)
+}
+
+// ── Saved-target registry (Step 2 helper) ─────────────────────────────
+// Operators with multiple labs/clouds typically rotate through 3-5
+// hypervisor endpoints. Retyping endpoint + root password + datastore
+// per run is friction; the four wrappers below let the wizard offer a
+// "pick from saved" dropdown alongside manual entry. Storage is a
+// single JSON file under %LOCALAPPDATA%\cluster-installer\servers.json
+// (same trust boundary as run state — passwords are plaintext).
+
+// ListSavedTargets returns saved hypervisor endpoints, most-recently-
+// used first. Empty list on first run / file-missing — the frontend
+// renders the manual-entry form unchanged in that case.
+func (a *App) ListSavedTargets() ([]state.SavedTarget, error) {
+	return a.targets.List()
+}
+
+// SaveTarget upserts a saved target. Empty ID = new entry; the store
+// generates a UUID and stamps CreatedAt. Returns the canonical record
+// so the frontend can pick up the assigned ID and show the saved row.
+func (a *App) SaveTarget(t state.SavedTarget) (state.SavedTarget, error) {
+	return a.targets.Save(t)
+}
+
+// DeleteSavedTarget removes a saved entry by ID. No-op on missing ID.
+func (a *App) DeleteSavedTarget(id string) error {
+	return a.targets.Delete(id)
+}
+
+// TouchSavedTarget bumps last-used-at timestamp without changing any
+// other field. Called when the operator picks a row from the dropdown
+// — the next render then shows that target at the top of the list.
+func (a *App) TouchSavedTarget(id string) error {
+	return a.targets.Touch(id)
+}
+
+// ── Saved-credential registry (Step 1 helper) ─────────────────────────
+// Same shape as the saved-target wrappers above, but for the
+// cluster_auth bag (sudo username + GitHub key import + raw SSH keys
+// + console password). Persisted at credentials.json.
+
+// ListSavedCredentials returns saved credential sets, most-recently-
+// used first. Empty list on first run.
+func (a *App) ListSavedCredentials() ([]state.SavedCredential, error) {
+	return a.creds.List()
+}
+
+// SaveCredential upserts a credential set. Empty ID = new entry; the
+// store generates a UUID and stamps CreatedAt. Returns the canonical
+// record so the frontend can pick up the assigned ID.
+func (a *App) SaveCredential(c state.SavedCredential) (state.SavedCredential, error) {
+	return a.creds.Save(c)
+}
+
+// DeleteSavedCredential removes a saved credential set by ID.
+func (a *App) DeleteSavedCredential(id string) error {
+	return a.creds.Delete(id)
+}
+
+// TouchSavedCredential bumps last-used-at on a credential set. Called
+// when the operator picks a row from the Step 1 dropdown.
+func (a *App) TouchSavedCredential(id string) error {
+	return a.creds.Touch(id)
 }
 
 // RedeployDevVM tears down and re-runs the same dev-vm inventory: a quick

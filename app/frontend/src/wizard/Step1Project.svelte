@@ -6,8 +6,9 @@
   import StepNav from '../lib/ui/StepNav.svelte';
   import Badge from '../lib/ui/Badge.svelte';
   import { wizardStore, type Topology } from '../stores/wizard';
-  import { api } from '../lib/api';
+  import { api, type SavedCredential } from '../lib/api';
   import logoSvg from '../assets/triangles-logo.svg?raw';
+  import { onMount } from 'svelte';
 
   // 'new' is the legacy alias for 'new-cluster' kept for back-compat with
   // saved sessions. The Step 1 mode picker normalises everything into the
@@ -28,6 +29,95 @@
     catch { runs = []; }
   }
   loadRuns();
+
+  // ── Saved cluster_auth registry ─────────────────────────────────
+  // Mirrors the saved-targets pattern from Step 2. List loaded once on
+  // mount; refreshed after every Save/Delete. selectedSavedCredID
+  // drives the picker — '' = "use the form fields below".
+  let savedCreds = $state<SavedCredential[]>([]);
+  let selectedSavedCredID = $state<string>('');
+  let savingCred = $state(false);
+  let credError = $state<string | null>(null);
+
+  onMount(async () => {
+    try { savedCreds = await api.listSavedCredentials(); }
+    catch (e) { console.warn('[savedCreds] list failed:', e); }
+  });
+
+  async function refreshSavedCreds() {
+    try { savedCreds = await api.listSavedCredentials(); }
+    catch (e) { console.warn('[savedCreds] refresh failed:', e); }
+  }
+
+  function applySavedCredential(id: string) {
+    const c = savedCreds.find((x) => x.id === id);
+    if (!c) { selectedSavedCredID = ''; return; }
+    selectedSavedCredID = id;
+    wizardStore.update((s) => ({
+      ...s,
+      inventory: {
+        ...s.inventory,
+        cluster_auth: {
+          username: c.username ?? '',
+          ssh_import_github: c.ssh_import_github ?? [],
+          ssh_authorized_keys: c.ssh_authorized_keys ?? [],
+          node_password: c.node_password ?? ''
+        }
+      }
+    }));
+    api.touchSavedCredential(id).then(refreshSavedCreds).catch(() => {});
+  }
+
+  async function saveCurrentCredential() {
+    credError = null;
+    const auth = $wizardStore.inventory.cluster_auth;
+    const hasContent = !!auth.username
+      || (auth.ssh_import_github && auth.ssh_import_github.length > 0)
+      || (auth.ssh_authorized_keys && auth.ssh_authorized_keys.length > 0)
+      || !!auth.node_password;
+    if (!hasContent) {
+      credError = '저장할 자격증명이 없습니다 — 사용자명/키/패스워드 중 하나는 채워주세요.';
+      return;
+    }
+    savingCred = true;
+    try {
+      const existing = savedCreds.find((x) => x.id === selectedSavedCredID);
+      const ghPart = (auth.ssh_import_github && auth.ssh_import_github.length > 0)
+        ? `GitHub: ${auth.ssh_import_github[0]}` + (auth.ssh_import_github.length > 1 ? ` (+${auth.ssh_import_github.length - 1})` : '')
+        : '';
+      const labelDefault = existing?.label || ghPart || (auth.username ? `sudo: ${auth.username}` : 'credentials');
+      const label = window.prompt('저장할 이름 (예: "lab keys (cmars)")', labelDefault) ?? labelDefault;
+      const payload: SavedCredential = {
+        id: selectedSavedCredID || '',
+        label: label.trim() || labelDefault,
+        username: auth.username,
+        ssh_import_github: auth.ssh_import_github,
+        ssh_authorized_keys: auth.ssh_authorized_keys,
+        node_password: auth.node_password
+      };
+      const saved = await api.saveCredential(payload);
+      selectedSavedCredID = saved.id;
+      await refreshSavedCreds();
+    } catch (e) {
+      credError = String(e);
+    } finally {
+      savingCred = false;
+    }
+  }
+
+  async function deleteSelectedCredential() {
+    if (!selectedSavedCredID) return;
+    const c = savedCreds.find((x) => x.id === selectedSavedCredID);
+    if (!c) return;
+    if (!window.confirm(`'${c.label}' 자격증명을 삭제할까요?`)) return;
+    try {
+      await api.deleteSavedCredential(selectedSavedCredID);
+      selectedSavedCredID = '';
+      await refreshSavedCreds();
+    } catch (e) {
+      credError = String(e);
+    }
+  }
 
   async function fetchContent() {
     busy = true; fetchErr = '';
@@ -240,6 +330,35 @@
 {#if mode === 'new-cluster' || mode === 'new-vm'}
   <Section title="노드 인증 자격 증명"
            subtitle="아래 정보는 새로 설치되는 노드의 sudo 계정 한 개에 모두 적용됩니다 — SSH 키, 콘솔 패스워드, sudoers NOPASSWD 항목이 같은 계정에 들어갑니다.">
+    <!-- 저장된 자격증명 picker — Step 2의 saved-server 패턴과 동일.
+         이전에 저장한 sudo 사용자명 + GitHub key + raw 키 + 콘솔 PW
+         묶음을 한 번에 불러올 수 있다. -->
+    {#if savedCreds.length > 0}
+      <Field label="저장된 자격증명에서 선택">
+        <div class="saved-row">
+          <select value={selectedSavedCredID}
+                  onchange={(e) => applySavedCredential((e.target as HTMLSelectElement).value)}>
+            <option value="">— 새로 입력 —</option>
+            {#each savedCreds as c}
+              <option value={c.id}>{c.label}</option>
+            {/each}
+          </select>
+          {#if selectedSavedCredID}
+            <Button variant="danger" onclick={deleteSelectedCredential}>삭제</Button>
+          {/if}
+        </div>
+      </Field>
+    {/if}
+    <div class="saved-actions">
+      <Button variant="secondary" disabled={savingCred} onclick={saveCurrentCredential}>
+        {savingCred ? '저장 중…' : (selectedSavedCredID ? '선택 항목 업데이트' : '현재 입력 저장')}
+      </Button>
+      {#if credError}<Badge tone="danger">{credError}</Badge>{/if}
+      {#if !selectedSavedCredID && savedCreds.length === 0}
+        <span class="muted">사용자명·SSH 키·패스워드를 입력한 뒤 '현재 입력 저장'을 누르면 다음 실행에서 한 번에 불러옵니다.</span>
+      {/if}
+    </div>
+
     <Field label="사용자명 (sudo 계정)"
            hint={'기본 \'triangles\'. autoinstall이 이 이름으로 사용자를 만들고, 아래 SSH 키와 콘솔 패스워드를 이 계정에 적용합니다. SSH 접속도 ssh ' + ($wizardStore.inventory.cluster_auth.username || 'triangles') + '@<ip> 형태가 됩니다.'}
            required>
@@ -364,4 +483,12 @@
   th, td { padding: 0.5rem; text-align: left; border-bottom: 1px solid #2a2a30; }
   th { color: #a1a1aa; font-weight: 500; }
   code { background: #27272a; padding: 0.1rem 0.4rem; border-radius: 3px; }
+
+  /* Saved-credential picker — same look-and-feel as Step 2's
+     saved-target picker so the two registries feel like one feature. */
+  .saved-row { display: flex; gap: 0.5rem; align-items: stretch; }
+  .saved-row select { flex: 1; }
+  .saved-actions { display: flex; gap: 0.6rem; align-items: center;
+                   margin: 0.4rem 0 1rem; flex-wrap: wrap; }
+  .saved-actions .muted { font-size: 0.78rem; color: #71717a; }
 </style>

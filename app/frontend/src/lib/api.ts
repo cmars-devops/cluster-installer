@@ -51,6 +51,40 @@ export type LeftoverISOs = {
   error?: string;
 };
 
+// SavedTarget mirrors internal/state.SavedTarget — a previously-used
+// hypervisor endpoint the operator can re-pick from a dropdown on
+// Step 2 instead of retyping endpoint + credentials each run.
+export type SavedTarget = {
+  id: string;
+  label: string;
+  type: 'libvirt' | 'proxmox' | 'esxi' | string;
+  endpoint: string;
+  username?: string;
+  password?: string;
+  ssh_key?: string;
+  api_token?: string;
+  tls_insecure?: boolean;
+  datastore?: string;
+  iso_datastore?: string;
+  network?: string;
+  created_at?: string;
+  last_used_at?: string;
+};
+
+// SavedCredential mirrors internal/state.SavedCredential — a saved
+// cluster_auth bag (sudo username + SSH-key sources + console password)
+// the operator can re-pick from the Step 1 dropdown.
+export type SavedCredential = {
+  id: string;
+  label: string;
+  username?: string;
+  ssh_import_github?: string[];
+  ssh_authorized_keys?: string[];
+  node_password?: string;
+  created_at?: string;
+  last_used_at?: string;
+};
+
 // Result of probing an ESXi host (or vCenter) and listing the resources
 // the operator will pick from. Returned by App.DiscoverESXi(target).
 export type ESXiDiscovery = {
@@ -136,6 +170,34 @@ export const api = {
   },
   wipeLeftoverISOs(target: unknown): Promise<void> {
     return call<void>('WipeLeftoverISOs', [target], undefined);
+  },
+
+  // ── Saved-target registry (Step 2 dropdown) ───────────────────────
+  listSavedTargets(): Promise<SavedTarget[]> {
+    return call<SavedTarget[]>('ListSavedTargets', [], []);
+  },
+  saveTarget(t: SavedTarget): Promise<SavedTarget> {
+    return call<SavedTarget>('SaveTarget', [t], { ...t, id: t.id || 'mock-' + Date.now() });
+  },
+  deleteSavedTarget(id: string): Promise<void> {
+    return call<void>('DeleteSavedTarget', [id], undefined);
+  },
+  touchSavedTarget(id: string): Promise<void> {
+    return call<void>('TouchSavedTarget', [id], undefined);
+  },
+
+  // ── Saved-credential registry (Step 1 dropdown) ──────────────────
+  listSavedCredentials(): Promise<SavedCredential[]> {
+    return call<SavedCredential[]>('ListSavedCredentials', [], []);
+  },
+  saveCredential(c: SavedCredential): Promise<SavedCredential> {
+    return call<SavedCredential>('SaveCredential', [c], { ...c, id: c.id || 'mock-' + Date.now() });
+  },
+  deleteSavedCredential(id: string): Promise<void> {
+    return call<void>('DeleteSavedCredential', [id], undefined);
+  },
+  touchSavedCredential(id: string): Promise<void> {
+    return call<void>('TouchSavedCredential', [id], undefined);
   },
 
   // Probe an ESXi/vCenter endpoint with the given target spec, return

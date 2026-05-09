@@ -40,11 +40,19 @@ func targetOUI(targetType string) [3]byte {
 }
 
 // allocateMAC returns a deterministic, locally-administered MAC for the
-// given (cluster, hostname) pair on the given target type. Format:
-// "AA:BB:CC:DD:EE:FF" (uppercase, colon-separated).
-func allocateMAC(targetType, cluster, hostname string) string {
+// given (cluster, hostname, nicIndex) tuple on the given target type.
+// Format: "AA:BB:CC:DD:EE:FF" (uppercase). nicIndex=0 reproduces the
+// pre-multi-NIC behaviour byte-for-byte (so existing single-NIC nodes
+// keep their MACs across the upgrade).
+func allocateMAC(targetType, cluster, hostname string, nicIndex int) string {
 	oui := targetOUI(targetType)
-	sum := sha256.Sum256([]byte(cluster + "/" + hostname))
+	key := cluster + "/" + hostname
+	if nicIndex > 0 {
+		// Suffix only when index > 0 so single-NIC inventories keep
+		// the same MAC they had before the multi-NIC change.
+		key = fmt.Sprintf("%s#nic%d", key, nicIndex)
+	}
+	sum := sha256.Sum256([]byte(key))
 	suffix := sum[:3]
 
 	// ESXi requires the high byte of the suffix to be ≤ 0x3F so the full
@@ -58,21 +66,42 @@ func allocateMAC(targetType, cluster, hostname string) string {
 		suffix[0], suffix[1], suffix[2])
 }
 
-// ensureNodeMACs walks the inventory and fills in PrimaryMAC for any node
-// that doesn't already have one. Returns true if any node was changed,
-// so the caller can persist the updated inventory back to run.json.
+// ensureNodeMACs walks the inventory and fills in MAC addresses for
+// every NIC that doesn't already carry one. Behaviour:
+//
+//   - NodeSpec.PrimaryMAC (legacy single-NIC field) is set if empty —
+//     remains the canonical MAC for the FIRST NIC.
+//   - NodeSpec.NICs (multi-NIC dev-vm flow) gets a per-entry MAC.
+//     Entry 0 mirrors PrimaryMAC; entry N>0 hashes a "nicN"-suffixed
+//     key so each NIC gets its own deterministic address.
+//
+// Idempotent: re-running on a populated inventory makes no changes.
+// Returns true if any field was filled.
 func ensureNodeMACs(inv *inventory.Inventory) bool {
 	changed := false
 	for i := range inv.Nodes {
-		if inv.Nodes[i].PrimaryMAC != "" {
-			continue
+		n := &inv.Nodes[i]
+		// Always make sure PrimaryMAC is populated — used by legacy
+		// single-NIC paths and by NICs[0] when the operator left
+		// the multi-NIC list at default.
+		if n.PrimaryMAC == "" {
+			n.PrimaryMAC = allocateMAC(inv.Target.Type, inv.Cluster.Name, n.Hostname, 0)
+			changed = true
 		}
-		inv.Nodes[i].PrimaryMAC = allocateMAC(
-			inv.Target.Type,
-			inv.Cluster.Name,
-			inv.Nodes[i].Hostname,
-		)
-		changed = true
+		// Fill MACs on each NIC entry. NIC[0] inherits PrimaryMAC so
+		// the two views agree even when the operator only edited one
+		// of them.
+		for j := range n.NICs {
+			if n.NICs[j].MAC != "" {
+				continue
+			}
+			if j == 0 {
+				n.NICs[j].MAC = n.PrimaryMAC
+			} else {
+				n.NICs[j].MAC = allocateMAC(inv.Target.Type, inv.Cluster.Name, n.Hostname, j)
+			}
+			changed = true
+		}
 	}
 	return changed
 }

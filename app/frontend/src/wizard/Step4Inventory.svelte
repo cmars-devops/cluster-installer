@@ -5,7 +5,12 @@
   import Button from '../lib/ui/Button.svelte';
   import StepNav from '../lib/ui/StepNav.svelte';
   import Badge from '../lib/ui/Badge.svelte';
-  import { wizardStore, addNode, removeNode, updateNode, type Role, type NodeSpec } from '../stores/wizard';
+  import {
+    wizardStore, addNode, removeNode, updateNode,
+    addDevVMDisk, removeDevVMDisk, updateDevVMDisk,
+    addDevVMNIC, removeDevVMNIC, updateDevVMNIC, syncPrimaryFromLegacy,
+    type Role, type NodeSpec, type DiskSpec, type NICSpec
+  } from '../stores/wizard';
   import { api } from '../lib/api';
 
   const k8sRoles: Role[]  = ['control-plane', 'etcd', 'worker'];
@@ -39,13 +44,29 @@
   const devVMNode = $derived<NodeSpec | undefined>(
     devVMMode ? $wizardStore.inventory.nodes[0] : undefined
   );
-  function updateDevVMNode(patch: Partial<NodeSpec>) { updateNode(0, patch); }
+  function updateDevVMNode(patch: Partial<NodeSpec>) {
+    updateNode(0, patch);
+    // When the operator added extras, disks[0]/nics[0] must mirror the
+    // legacy primary fields. The store helper is a no-op when neither
+    // array is populated, so cluster-mode pathways are untouched.
+    syncPrimaryFromLegacy($wizardStore.inventory.target.network || 'VM Network');
+  }
   function updateNetwork(patch: Partial<typeof $wizardStore.inventory.network>) {
     wizardStore.update((s) => ({
       ...s,
       inventory: { ...s.inventory, network: { ...s.inventory.network, ...patch } }
     }));
   }
+  // Same shape as Step 2's updateTarget — used by the dev-vm primary
+  // NIC port-group picker that lives here so the operator can change
+  // it without backtracking to Step 2.
+  function updateTarget(patch: Partial<typeof $wizardStore.inventory.target>) {
+    wizardStore.update((s) => ({
+      ...s,
+      inventory: { ...s.inventory, target: { ...s.inventory.target, ...patch } }
+    }));
+  }
+  // IPv4 octet check reused for the per-NIC IP/gateway/nameservers below.
   function setNameserversText(value: string) {
     updateNetwork({
       nameservers: value.split(',').map((x) => x.trim()).filter(Boolean)
@@ -699,8 +720,19 @@ content:
   {@const isStatic = ipMode === 'static'}
   {@const dsAvailable = ($wizardStore.discovered.datastores ?? []).filter((d) => d.accessible !== false)}
   {@const staticOK = ipMode !== 'static' || (!!devVMNode.ip && !invalidIP && !!$wizardStore.inventory.network.gateway && !invalidGateway && invalidNameservers.length === 0)}
-  {@const canAdvance = !!devVMNode.hostname && (ipMode === 'dhcp' || (!!devVMNode.ip && staticOK)) && !!(devVMNode.datastore || $wizardStore.inventory.target.datastore)}
+  {@const extraNICsOK = (devVMNode.nics ?? []).slice(1).every((nic) => {
+    if (!nic.network) return false;
+    if ((nic.ip_mode ?? 'dhcp') !== 'static') return true;
+    return !!nic.ip && isValidIPv4(nic.ip) && (!nic.gateway || isValidIPv4(nic.gateway));
+  })}
+  {@const extraDisksOK = (devVMNode.disks ?? []).slice(1).every((d) => (d.size_gb ?? 0) > 0)}
+  {@const canAdvance = !!devVMNode.hostname && (ipMode === 'dhcp' || (!!devVMNode.ip && staticOK)) && !!(devVMNode.datastore || $wizardStore.inventory.target.datastore) && extraNICsOK && extraDisksOK}
 
+  <!-- ── 1) VM 명세 ─────────────────────────────────────────────────
+       Identity-only block: hostname (OS-internal) + vSphere display
+       label. CPU / memory / disk / NIC each get their own section
+       below so the form reads top-down as: who → resources → disks →
+       network. -->
   <Section title={$_('step4.devVMSection')} subtitle={$_('step4.devVMSectionHint')}>
     <div class="grid-2">
       <Field label={$_('step4.devVM.hostname')} hint={$_('step4.devVM.hostnameHint')} required>
@@ -714,67 +746,14 @@ content:
                placeholder={devVMNode.hostname || '(호스트네임과 동일)'} />
       </Field>
     </div>
+  </Section>
 
-    <!-- IP 모드: DHCP / Static -->
-    <div class="ipmode-row">
-      <span class="ipmode-label">{$_('step4.devVM.ipMode')}</span>
-      <label class="ipmode-radio">
-        <input type="radio" name="ipmode" checked={ipMode === 'dhcp'}
-               onchange={() => updateDevVMNode({ ip_mode: 'dhcp', ip: '' })} />
-        <span>DHCP</span>
-        <small>{$_('step4.devVM.ipModeDHCPHint')}</small>
-      </label>
-      <label class="ipmode-radio">
-        <input type="radio" name="ipmode" checked={ipMode === 'static'}
-               onchange={() => updateDevVMNode({ ip_mode: 'static' })} />
-        <span>{$_('step4.devVM.ipModeStatic')}</span>
-        <small>{$_('step4.devVM.ipModeStaticHint')}</small>
-      </label>
-    </div>
-
-    {#if isStatic}
-      <div class="grid-2">
-        <Field label={$_('step4.node.ip')} hint="10.10.1.50" required>
-          <input value={devVMNode.ip}
-                 class:input-error={invalidIP}
-                 oninput={(e) => updateDevVMNode({ ip: (e.target as HTMLInputElement).value })} />
-          {#if invalidIP}
-            <span class="input-warn">⚠ {$_('step4.devVM.invalidIPv4')}: <code>{devVMNode.ip}</code></span>
-          {/if}
-        </Field>
-        <Field label={$_('step4.gateway')} hint="10.10.1.1" required>
-          <input value={$wizardStore.inventory.network.gateway}
-                 class:input-error={invalidGateway}
-                 oninput={(e) => updateNetwork({ gateway: (e.target as HTMLInputElement).value })} />
-          {#if invalidGateway}
-            <span class="input-warn">⚠ {$_('step4.devVM.invalidIPv4')}: <code>{$wizardStore.inventory.network.gateway}</code></span>
-          {/if}
-        </Field>
-        <Field label={$_('step4.devVM.prefixLen')} hint="/24 → 24">
-          <input type="number" min="8" max="30"
-                 value={$wizardStore.inventory.network.prefix_len ?? 24}
-                 oninput={(e) => updateNetwork({ prefix_len: +(e.target as HTMLInputElement).value || 24 })} />
-        </Field>
-        <Field label={$_('step4.nameservers')} hint="1.1.1.1, 8.8.8.8">
-          <input value={$wizardStore.inventory.network.nameservers.join(', ')}
-                 class:input-error={invalidNameservers.length > 0}
-                 oninput={(e) => setNameserversText((e.target as HTMLInputElement).value)} />
-          {#if invalidNameservers.length > 0}
-            <span class="input-warn">⚠ {$_('step4.devVM.invalidIPv4')}: <code>{invalidNameservers.join(', ')}</code> — {$_('step4.devVM.nameserverHint')}</span>
-          {/if}
-        </Field>
-      </div>
-    {:else}
-      <p class="muted dhcp-note">{$_('step4.devVM.dhcpNote')}</p>
-      <Field label={$_('step4.node.ip')} hint={$_('step4.devVM.ipDHCPHint')}>
-        <input value={devVMNode.ip}
-               oninput={(e) => updateDevVMNode({ ip: (e.target as HTMLInputElement).value })}
-               placeholder="10.10.1.50 (선택, verify 단계용)" />
-      </Field>
-    {/if}
-
-    <!-- VM 자원 -->
-    <div class="grid-3" style="margin-top: 0.5rem;">
+  <!-- ── 2) 자원 (CPU & Memory) ────────────────────────────────────
+       Disk(GB) used to live here too, but that mixed VM-level sizing
+       with per-disk identity. The OS disk is now a row in the disk
+       section (same shape as extras), keeping every disk in one place. -->
+  <Section title={$_('step4.devVM.resourcesTitle')} subtitle={$_('step4.devVM.resourcesHint')}>
+    <div class="grid-2">
       <Field label={$_('step4.node.cpu')}>
         <input type="number" min="1"
                value={devVMNode.cpu}
@@ -785,41 +764,303 @@ content:
                value={devVMNode.memory_gb}
                oninput={(e) => updateDevVMNode({ memory_gb: +(e.target as HTMLInputElement).value || 4 })} />
       </Field>
-      <Field label={$_('step4.node.disk')}>
-        <input type="number" min="10"
-               value={devVMNode.disk_gb}
-               oninput={(e) => updateDevVMNode({ disk_gb: +(e.target as HTMLInputElement).value || 40 })} />
-      </Field>
+    </div>
+    <details class="cephadm-advanced">
+      <summary>
+        <span class="adv-title">{$_('step4.devVM.esxiAdvanced')}</span>
+        <span class="adv-sub">{$_('step4.devVM.esxiAdvancedHint')}</span>
+      </summary>
+      <div class="adv-body">
+        <p class="muted">{$_('step4.devVM.esxiAdvancedTodo')}</p>
+      </div>
+    </details>
+  </Section>
+
+  <!-- ── 3) 디스크 — 기본 OS 디스크 + 추가 디스크 N개 ──────────────
+       Primary OS disk uses the SAME row layout as extras (size +
+       datastore + provisioning + label) — only the badge differs (OS
+       vs #2/#3) and the OS row has no remove-× button. Bindings stay
+       on the legacy NodeSpec fields (disk_gb / datastore /
+       disk_provisioning) so EffectiveDisks() keeps the cluster path
+       intact. -->
+  <Section title={$_('step4.devVM.disksTitle')} subtitle={$_('step4.devVM.disksHint')}>
+    <!-- Primary OS disk row -->
+    <div class="extra-row">
+      <div class="extra-row-head">
+        <span class="row-badge">{$_('step4.devVM.diskOS')}</span>
+      </div>
+      <div class="grid-4">
+        <Field label={$_('step4.devVM.diskSize')} required>
+          <input type="number" min="10"
+                 value={devVMNode.disk_gb}
+                 oninput={(e) => updateDevVMNode({ disk_gb: +(e.target as HTMLInputElement).value || 40 })} />
+        </Field>
+        <Field label={$_('step4.devVM.datastore')} hint={$_('step4.devVM.datastoreHint')} required>
+          {#if dsAvailable.length > 0}
+            <select value={devVMNode.datastore ?? ''}
+                    onchange={(e) => updateDevVMNode({ datastore: (e.target as HTMLSelectElement).value })}>
+              <option value="">— {$_('step4.devVM.datastorePicker')} —</option>
+              {#each dsAvailable as ds}
+                <option value={ds.name}>
+                  {ds.name}{ds.type ? ` (${ds.type}` : ''}{ds.free_gb ? `, ${ds.free_gb.toFixed(0)} / ${ds.capacity_gb?.toFixed(0)} GB` : ''}{ds.type ? ')' : ''}
+                </option>
+              {/each}
+            </select>
+          {:else}
+            <input value={devVMNode.datastore ?? ''}
+                   oninput={(e) => updateDevVMNode({ datastore: (e.target as HTMLInputElement).value })}
+                   placeholder="datastore1" />
+          {/if}
+        </Field>
+        <Field label={$_('step4.devVM.diskProvisioning')} hint={$_('step4.devVM.diskProvisioningHint')}>
+          <select value={devVMNode.disk_provisioning ?? 'thin'}
+                  onchange={(e) => updateDevVMNode({ disk_provisioning: (e.target as HTMLSelectElement).value as 'thin' | 'thick' | 'thick-eager' })}>
+            <option value="thin">thin (희소)</option>
+            <option value="thick">thick (즉시, lazy zero)</option>
+            <option value="thick-eager">thick-eager (즉시 + 0 채움)</option>
+          </select>
+        </Field>
+        <Field label={$_('step4.devVM.diskLabel')}>
+          <input value="OS" disabled class="readonly-input" />
+        </Field>
+      </div>
     </div>
 
-    <!-- 디스크 데이터스토어 + 프로비저닝 -->
-    <div class="grid-2">
-      <Field label={$_('step4.devVM.datastore')} hint={$_('step4.devVM.datastoreHint')} required>
-        {#if dsAvailable.length > 0}
-          <select value={devVMNode.datastore ?? ''}
-                  onchange={(e) => updateDevVMNode({ datastore: (e.target as HTMLSelectElement).value })}>
-            <option value="">— {$_('step4.devVM.datastorePicker')} —</option>
-            {#each dsAvailable as ds}
-              <option value={ds.name}>
-                {ds.name}{ds.type ? ` (${ds.type}` : ''}{ds.free_gb ? `, ${ds.free_gb.toFixed(0)} / ${ds.capacity_gb?.toFixed(0)} GB` : ''}{ds.type ? ')' : ''}
-              </option>
-            {/each}
-          </select>
-        {:else}
-          <input value={devVMNode.datastore ?? ''}
-                 oninput={(e) => updateDevVMNode({ datastore: (e.target as HTMLInputElement).value })}
-                 placeholder="datastore1 (Step 2 → '연결 + 리소스 가져오기'로 자동 채움 가능)" />
-        {/if}
-      </Field>
+    <!-- Extra disk rows -->
+    {#each (devVMNode.disks ?? []).slice(1) as disk, idx}
+      {@const realIdx = idx + 1}
+      <div class="extra-row">
+        <div class="extra-row-head">
+          <span class="row-badge muted">{$_('step4.devVM.extraDisk')} #{realIdx}</span>
+          <button type="button" class="row-remove" onclick={() => removeDevVMDisk(realIdx)}
+                  title={$_('step4.devVM.removeDisk')}>×</button>
+        </div>
+        <div class="grid-4">
+          <Field label={$_('step4.devVM.diskSize')}>
+            <input type="number" min="1"
+                   value={disk.size_gb}
+                   oninput={(e) => updateDevVMDisk(realIdx, { size_gb: +(e.target as HTMLInputElement).value || 100 })} />
+          </Field>
+          <Field label={$_('step4.devVM.datastore')}>
+            {#if dsAvailable.length > 0}
+              <select value={disk.datastore ?? ''}
+                      onchange={(e) => updateDevVMDisk(realIdx, { datastore: (e.target as HTMLSelectElement).value })}>
+                <option value="">— ({$_('step4.devVM.usePrimary')}) —</option>
+                {#each dsAvailable as ds}
+                  <option value={ds.name}>{ds.name}</option>
+                {/each}
+              </select>
+            {:else}
+              <input value={disk.datastore ?? ''}
+                     oninput={(e) => updateDevVMDisk(realIdx, { datastore: (e.target as HTMLInputElement).value })} />
+            {/if}
+          </Field>
+          <Field label={$_('step4.devVM.diskProvisioning')}>
+            <select value={disk.provisioning ?? 'thin'}
+                    onchange={(e) => updateDevVMDisk(realIdx, { provisioning: (e.target as HTMLSelectElement).value as 'thin' | 'thick' | 'thick-eager' })}>
+              <option value="thin">thin</option>
+              <option value="thick">thick</option>
+              <option value="thick-eager">thick-eager</option>
+            </select>
+          </Field>
+          <Field label={$_('step4.devVM.diskLabel')}>
+            <input value={disk.label ?? ''}
+                   placeholder="data, logs, …"
+                   oninput={(e) => updateDevVMDisk(realIdx, { label: (e.target as HTMLInputElement).value })} />
+          </Field>
+        </div>
+      </div>
+    {/each}
 
-      <Field label={$_('step4.devVM.diskProvisioning')} hint={$_('step4.devVM.diskProvisioningHint')}>
-        <select value={devVMNode.disk_provisioning ?? 'thin'}
-                onchange={(e) => updateDevVMNode({ disk_provisioning: (e.target as HTMLSelectElement).value as 'thin' | 'thick' | 'thick-eager' })}>
-          <option value="thin">thin (희소 할당, 기본)</option>
-          <option value="thick">thick (즉시 할당, lazy zeroed)</option>
-          <option value="thick-eager">thick-eager (즉시 할당 + 0 채움, 가장 안정적)</option>
-        </select>
-      </Field>
+    <div class="add-row">
+      <Button variant="ghost" onclick={() => addDevVMDisk()}>
+        + {$_('step4.devVM.addDisk')}
+      </Button>
+    </div>
+  </Section>
+
+  <!-- ── 4) NIC — 기본 NIC + 추가 NIC N개 ──────────────────────────
+       Same row pattern: primary uses the legacy fields (target.network
+       + devVMNode.ip_mode + devVMNode.ip + network.gateway/prefix/dns)
+       so EffectiveNICs() can synthesise correctly when no extras
+       exist. Extras live in devVMNode.nics[1..]. -->
+  <Section title={$_('step4.devVM.nicsTitleAll')} subtitle={$_('step4.devVM.nicsHintAll')}>
+    <!-- Primary NIC row -->
+    <div class="extra-row">
+      <div class="extra-row-head">
+        <span class="row-badge">{$_('step4.devVM.nicPrimary')}</span>
+      </div>
+      <div class="grid-2">
+        <Field label={$_('step4.devVM.nicNetwork')} hint={$_('step4.devVM.nicNetworkHint')} required>
+          {#if ($wizardStore.discovered.networks ?? []).length > 0}
+            <select value={$wizardStore.inventory.target.network ?? ''}
+                    onchange={(e) => updateTarget({ network: (e.target as HTMLSelectElement).value })}>
+              <option value="">— {$_('step4.devVM.networkPicker')} —</option>
+              {#each $wizardStore.discovered.networks ?? [] as net}
+                <option value={net.name}>
+                  {net.name}{net.vswitch ? `  (${net.vswitch}` : ''}{net.vlan_id ? `, VLAN ${net.vlan_id}` : ''}{net.vswitch ? ')' : ''}
+                </option>
+              {/each}
+            </select>
+          {:else}
+            <input value={$wizardStore.inventory.target.network ?? ''}
+                   oninput={(e) => updateTarget({ network: (e.target as HTMLInputElement).value })}
+                   placeholder="VM Network" />
+          {/if}
+        </Field>
+        <Field label={$_('step4.devVM.nicLabel')}>
+          <input value="primary" disabled class="readonly-input" />
+        </Field>
+      </div>
+
+      <div class="ipmode-row">
+        <span class="ipmode-label">{$_('step4.devVM.ipMode')}</span>
+        <label class="ipmode-radio">
+          <input type="radio" name="ipmode" checked={ipMode === 'dhcp'}
+                 onchange={() => updateDevVMNode({ ip_mode: 'dhcp', ip: '' })} />
+          <span>DHCP</span>
+          <small>{$_('step4.devVM.ipModeDHCPHint')}</small>
+        </label>
+        <label class="ipmode-radio">
+          <input type="radio" name="ipmode" checked={ipMode === 'static'}
+                 onchange={() => updateDevVMNode({ ip_mode: 'static' })} />
+          <span>{$_('step4.devVM.ipModeStatic')}</span>
+          <small>{$_('step4.devVM.ipModeStaticHint')}</small>
+        </label>
+      </div>
+
+      {#if isStatic}
+        <div class="grid-4">
+          <Field label={$_('step4.node.ip')} hint="10.10.1.50" required>
+            <input value={devVMNode.ip}
+                   class:input-error={invalidIP}
+                   oninput={(e) => updateDevVMNode({ ip: (e.target as HTMLInputElement).value })} />
+            {#if invalidIP}
+              <span class="input-warn">⚠ {$_('step4.devVM.invalidIPv4')}</span>
+            {/if}
+          </Field>
+          <Field label={$_('step4.devVM.prefixLen')} hint="/24 → 24">
+            <input type="number" min="8" max="30"
+                   value={$wizardStore.inventory.network.prefix_len ?? 24}
+                   oninput={(e) => updateNetwork({ prefix_len: +(e.target as HTMLInputElement).value || 24 })} />
+          </Field>
+          <Field label={$_('step4.gateway')} hint="10.10.1.1" required>
+            <input value={$wizardStore.inventory.network.gateway}
+                   class:input-error={invalidGateway}
+                   oninput={(e) => updateNetwork({ gateway: (e.target as HTMLInputElement).value })} />
+            {#if invalidGateway}
+              <span class="input-warn">⚠ {$_('step4.devVM.invalidIPv4')}</span>
+            {/if}
+          </Field>
+          <Field label={$_('step4.nameservers')} hint="1.1.1.1, 8.8.8.8">
+            <input value={$wizardStore.inventory.network.nameservers.join(', ')}
+                   class:input-error={invalidNameservers.length > 0}
+                   oninput={(e) => setNameserversText((e.target as HTMLInputElement).value)} />
+            {#if invalidNameservers.length > 0}
+              <span class="input-warn">⚠ {$_('step4.devVM.invalidIPv4')}: <code>{invalidNameservers.join(', ')}</code></span>
+            {/if}
+          </Field>
+        </div>
+      {:else}
+        <p class="muted dhcp-note">{$_('step4.devVM.dhcpNote')}</p>
+        <Field label={$_('step4.node.ip')} hint={$_('step4.devVM.ipDHCPHint')}>
+          <input value={devVMNode.ip}
+                 oninput={(e) => updateDevVMNode({ ip: (e.target as HTMLInputElement).value })}
+                 placeholder="10.10.1.50 (선택, verify 단계용)" />
+        </Field>
+      {/if}
+      {#if devVMNode.primary_mac}
+        <p class="muted mac-line">MAC: <code>{devVMNode.primary_mac}</code> <small>({$_('step4.devVM.macAuto')})</small></p>
+      {/if}
+    </div>
+
+    <!-- Extra NIC rows -->
+    {#each (devVMNode.nics ?? []).slice(1) as nic, idx}
+      {@const realIdx = idx + 1}
+      {@const nicMode = nic.ip_mode ?? 'dhcp'}
+      {@const nicIPInvalid = nicMode === 'static' && !!nic.ip && !isValidIPv4(nic.ip)}
+      {@const nicGwInvalid = nicMode === 'static' && !!nic.gateway && !isValidIPv4(nic.gateway)}
+      <div class="extra-row">
+        <div class="extra-row-head">
+          <span class="row-badge muted">{$_('step4.devVM.extraNIC')} #{realIdx}</span>
+          <button type="button" class="row-remove" onclick={() => removeDevVMNIC(realIdx)}
+                  title={$_('step4.devVM.removeNIC')}>×</button>
+        </div>
+        <div class="grid-2">
+          <Field label={$_('step4.devVM.nicNetwork')} hint={$_('step4.devVM.nicNetworkHint')} required>
+            {#if ($wizardStore.discovered.networks ?? []).length > 0}
+              <select value={nic.network ?? ''}
+                      onchange={(e) => updateDevVMNIC(realIdx, { network: (e.target as HTMLSelectElement).value })}>
+                <option value="">— {$_('step4.devVM.networkPicker')} —</option>
+                {#each $wizardStore.discovered.networks ?? [] as net}
+                  <option value={net.name}>{net.name}{net.vswitch ? ` (${net.vswitch})` : ''}</option>
+                {/each}
+              </select>
+            {:else}
+              <input value={nic.network ?? ''}
+                     oninput={(e) => updateDevVMNIC(realIdx, { network: (e.target as HTMLInputElement).value })}
+                     placeholder="VM Network" />
+            {/if}
+          </Field>
+          <Field label={$_('step4.devVM.nicLabel')}>
+            <input value={nic.label ?? ''}
+                   placeholder="storage, mgmt, …"
+                   oninput={(e) => updateDevVMNIC(realIdx, { label: (e.target as HTMLInputElement).value })} />
+          </Field>
+        </div>
+        <div class="ipmode-row">
+          <span class="ipmode-label">{$_('step4.devVM.ipMode')}</span>
+          <label class="ipmode-radio">
+            <input type="radio" name={`nicmode-${realIdx}`} checked={nicMode === 'dhcp'}
+                   onchange={() => updateDevVMNIC(realIdx, { ip_mode: 'dhcp', ip: '', gateway: '' })} />
+            <span>DHCP</span>
+          </label>
+          <label class="ipmode-radio">
+            <input type="radio" name={`nicmode-${realIdx}`} checked={nicMode === 'static'}
+                   onchange={() => updateDevVMNIC(realIdx, { ip_mode: 'static' })} />
+            <span>{$_('step4.devVM.ipModeStatic')}</span>
+          </label>
+        </div>
+        {#if nicMode === 'static'}
+          <div class="grid-4">
+            <Field label={$_('step4.node.ip')}>
+              <input value={nic.ip ?? ''}
+                     class:input-error={nicIPInvalid}
+                     oninput={(e) => updateDevVMNIC(realIdx, { ip: (e.target as HTMLInputElement).value })} />
+              {#if nicIPInvalid}
+                <span class="input-warn">⚠ {$_('step4.devVM.invalidIPv4')}</span>
+              {/if}
+            </Field>
+            <Field label={$_('step4.devVM.prefixLen')}>
+              <input type="number" min="8" max="30"
+                     value={nic.prefix_len ?? 24}
+                     oninput={(e) => updateDevVMNIC(realIdx, { prefix_len: +(e.target as HTMLInputElement).value || 24 })} />
+            </Field>
+            <Field label={$_('step4.gateway')} hint={$_('step4.devVM.nicGatewayHint')}>
+              <input value={nic.gateway ?? ''}
+                     class:input-error={nicGwInvalid}
+                     oninput={(e) => updateDevVMNIC(realIdx, { gateway: (e.target as HTMLInputElement).value })} />
+              {#if nicGwInvalid}
+                <span class="input-warn">⚠ {$_('step4.devVM.invalidIPv4')}</span>
+              {/if}
+            </Field>
+            <Field label={$_('step4.nameservers')}>
+              <input value={(nic.nameservers ?? []).join(', ')}
+                     placeholder="(선택)"
+                     oninput={(e) => updateDevVMNIC(realIdx, { nameservers: (e.target as HTMLInputElement).value.split(',').map((x) => x.trim()).filter(Boolean) })} />
+            </Field>
+          </div>
+        {/if}
+        {#if nic.mac}
+          <p class="muted mac-line">MAC: <code>{nic.mac}</code> <small>({$_('step4.devVM.macAuto')})</small></p>
+        {/if}
+      </div>
+    {/each}
+
+    <div class="add-row">
+      <Button variant="ghost" onclick={() => addDevVMNIC($wizardStore.inventory.target.network || 'VM Network')}>
+        + {$_('step4.devVM.addNIC')}
+      </Button>
     </div>
 
     <p class="muted">{$_('step4.devVM.note')}</p>
@@ -1637,4 +1878,45 @@ content:
                 margin-top: 0.25rem; line-height: 1.4; }
   .input-warn code { background: #1f1010; color: #fca5a5; padding: 0.05rem 0.3rem;
                      border-radius: 3px; font-family: ui-monospace, monospace; }
+
+  /* dev-vm: multi-disk / multi-NIC dynamic rows */
+  .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; }
+  @media (max-width: 800px) { .grid-4 { grid-template-columns: 1fr 1fr; } }
+
+  .multi-row-header { margin: 1rem 0 0.4rem; padding-top: 0.7rem;
+                      border-top: 1px solid #2a2a30; }
+  .multi-row-header h4 { margin: 0; font-size: 0.85rem; color: #e4e4e7;
+                         text-transform: uppercase; letter-spacing: 0.05em;
+                         display: flex; align-items: center; gap: 0.5rem; }
+  .multi-row-header p { margin: 0.2rem 0 0; font-size: 0.72rem; color: #71717a; }
+
+  .row-badge { font-size: 0.65rem; padding: 0.05rem 0.45rem; border-radius: 3px;
+               background: #1e293b; color: #93c5fd; border: 1px solid #1e3a8a;
+               font-family: ui-monospace, monospace; letter-spacing: 0.04em;
+               font-weight: 600; }
+  .row-badge.muted { background: #1a1a1f; color: #a1a1aa; border-color: #3f3f46; }
+
+  .extra-row { margin: 0.55rem 0; padding: 0.55rem 0.75rem 0.7rem;
+               background: #0f0f12; border: 1px solid #2a2a30;
+               border-radius: 5px; }
+  .extra-row-head { display: flex; gap: 0.5rem; align-items: center;
+                    margin-bottom: 0.4rem; }
+  .row-remove { margin-left: auto; background: transparent; border: 1px solid #3f3f46;
+                color: #a1a1aa; border-radius: 4px; cursor: pointer;
+                width: 1.5rem; height: 1.5rem; line-height: 1; padding: 0;
+                font-size: 0.95rem; font-family: inherit; }
+  .row-remove:hover { border-color: #b91c1c; color: #fca5a5; background: #1f0a0a; }
+
+  .add-row { margin-top: 0.4rem; }
+  .mac-line { margin: 0.4rem 0 0; font-size: 0.72rem; }
+  .mac-line code { background: #16161a; padding: 0.05rem 0.3rem; border-radius: 3px;
+                   font-family: ui-monospace, monospace; color: #93c5fd; }
+
+  /* Disabled input with the same border/padding so the row stays
+     visually aligned (used for the "OS"/"primary" label cells). */
+  :global(input.readonly-input) {
+    background: #0a0a0c !important;
+    color: #71717a !important;
+    cursor: not-allowed;
+  }
 </style>

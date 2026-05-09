@@ -6,6 +6,27 @@ export type Role =
 
 export type DeviceClass = 'auto' | 'hdd' | 'ssd' | 'nvme';
 
+// DiskSpec / NICSpec mirror inventory.DiskSpec / inventory.NICSpec on
+// the Go side. Used by dev-vm Step 4 to populate node.disks / node.nics
+// directly. Cluster mode leaves both empty — tfvars renderer falls back
+// to legacy DiskGB / single-NIC fields via EffectiveDisks/EffectiveNICs.
+export interface DiskSpec {
+  size_gb: number;
+  datastore?: string;
+  provisioning?: 'thin' | 'thick' | 'thick-eager';
+  label?: string;
+}
+export interface NICSpec {
+  network: string;                         // ESXi port-group name
+  ip_mode?: 'static' | 'dhcp';
+  ip?: string;
+  prefix_len?: number;
+  gateway?: string;
+  nameservers?: string[];
+  mac?: string;                             // pre-allocated by orchestrator
+  label?: string;
+}
+
 export interface NodeSpec {
   hostname: string;
   /** vSphere inventory label. Empty = reuse hostname (most common). Set
@@ -18,6 +39,14 @@ export interface NodeSpec {
   os: 'microos' | 'leap' | 'tumbleweed' | 'ubuntu';
   /** Optional pinned OS version. For Ubuntu: '24.04' or '26.04'. */
   os_version?: string;
+  /** Multi-disk override. Position 0 = OS install disk; rest = blank
+   *  extras. When empty, the Go side falls back to disk_gb +
+   *  cluster Ceph helpers via EffectiveDisks(). */
+  disks?: DiskSpec[];
+  /** Multi-NIC override. Position 0 = primary (verify dials its IP).
+   *  When empty, the Go side synthesises a single NIC from
+   *  target.network + per-node IP/PrimaryMAC via EffectiveNICs(). */
+  nics?: NICSpec[];
   /** "static" (default) or "dhcp". When "dhcp", IP / gateway fields are
    *  ignored at install time — autoinstall enables dhcp4 on the primary NIC. */
   ip_mode?: 'static' | 'dhcp';
@@ -337,4 +366,164 @@ export function updateNode(index: number, patch: Partial<NodeSpec>) {
       nodes: s.inventory.nodes.map((n, i) => (i === index ? { ...n, ...patch } : n))
     }
   }));
+}
+
+// ── dev-vm: multi-disk / multi-NIC helpers ────────────────────────────
+// dev-vm node lives at inventory.nodes[0]. When the operator adds even
+// one extra disk or NIC we materialize the FULL list (primary + extras)
+// onto NodeSpec.disks / NodeSpec.nics, because the Go side's
+// EffectiveDisks/EffectiveNICs treats a non-empty list as "the operator
+// took control — use this verbatim, ignore legacy fields". Mixing
+// primary-from-legacy + extras-from-array is not supported there.
+//
+// All helpers below preserve that invariant: any time .disks/.nics is
+// non-empty after the call, .[0] reflects the legacy primary fields, and
+// removing the last extra clears the array entirely so the legacy
+// fallback resumes for cluster-mode parity.
+
+function synthPrimaryDisk(n: NodeSpec): DiskSpec {
+  return {
+    size_gb: n.disk_gb || 40,
+    datastore: n.datastore ?? '',
+    provisioning: n.disk_provisioning ?? 'thin',
+    label: 'OS'
+  };
+}
+function synthPrimaryNIC(n: NodeSpec, fallbackNetwork: string): NICSpec {
+  return {
+    network: fallbackNetwork,
+    ip_mode: n.ip_mode ?? 'static',
+    ip: n.ip ?? '',
+    mac: n.primary_mac,
+    label: 'primary'
+  };
+}
+
+export function addDevVMDisk() {
+  wizardStore.update((s) => {
+    const node = s.inventory.nodes[0];
+    if (!node) return s;
+    const cur = node.disks ?? [];
+    const next: DiskSpec[] = cur.length === 0
+      ? [synthPrimaryDisk(node), { size_gb: 100, datastore: node.datastore ?? '', provisioning: node.disk_provisioning ?? 'thin', label: '' }]
+      : [...cur, { size_gb: 100, datastore: cur[0].datastore ?? '', provisioning: cur[0].provisioning ?? 'thin', label: '' }];
+    return {
+      ...s,
+      inventory: {
+        ...s.inventory,
+        nodes: s.inventory.nodes.map((n, i) => (i === 0 ? { ...n, disks: next } : n))
+      }
+    };
+  });
+}
+
+export function removeDevVMDisk(idx: number) {
+  wizardStore.update((s) => {
+    const node = s.inventory.nodes[0];
+    if (!node || !node.disks) return s;
+    const filtered = node.disks.filter((_, i) => i !== idx);
+    // Only the primary left → clear array so legacy fallback resumes.
+    const next = filtered.length <= 1 ? undefined : filtered;
+    return {
+      ...s,
+      inventory: {
+        ...s.inventory,
+        nodes: s.inventory.nodes.map((n, i) => (i === 0 ? { ...n, disks: next } : n))
+      }
+    };
+  });
+}
+
+export function updateDevVMDisk(idx: number, patch: Partial<DiskSpec>) {
+  wizardStore.update((s) => {
+    const node = s.inventory.nodes[0];
+    if (!node || !node.disks) return s;
+    const next = node.disks.map((d, i) => (i === idx ? { ...d, ...patch } : d));
+    return {
+      ...s,
+      inventory: {
+        ...s.inventory,
+        nodes: s.inventory.nodes.map((n, i) => (i === 0 ? { ...n, disks: next } : n))
+      }
+    };
+  });
+}
+
+export function addDevVMNIC(fallbackNetwork: string) {
+  wizardStore.update((s) => {
+    const node = s.inventory.nodes[0];
+    if (!node) return s;
+    const cur = node.nics ?? [];
+    const blank: NICSpec = { network: fallbackNetwork, ip_mode: 'dhcp', label: '' };
+    const next: NICSpec[] = cur.length === 0
+      ? [synthPrimaryNIC(node, fallbackNetwork), blank]
+      : [...cur, blank];
+    return {
+      ...s,
+      inventory: {
+        ...s.inventory,
+        nodes: s.inventory.nodes.map((n, i) => (i === 0 ? { ...n, nics: next } : n))
+      }
+    };
+  });
+}
+
+export function removeDevVMNIC(idx: number) {
+  wizardStore.update((s) => {
+    const node = s.inventory.nodes[0];
+    if (!node || !node.nics) return s;
+    const filtered = node.nics.filter((_, i) => i !== idx);
+    const next = filtered.length <= 1 ? undefined : filtered;
+    return {
+      ...s,
+      inventory: {
+        ...s.inventory,
+        nodes: s.inventory.nodes.map((n, i) => (i === 0 ? { ...n, nics: next } : n))
+      }
+    };
+  });
+}
+
+export function updateDevVMNIC(idx: number, patch: Partial<NICSpec>) {
+  wizardStore.update((s) => {
+    const node = s.inventory.nodes[0];
+    if (!node || !node.nics) return s;
+    const next = node.nics.map((nic, i) => (i === idx ? { ...nic, ...patch } : nic));
+    return {
+      ...s,
+      inventory: {
+        ...s.inventory,
+        nodes: s.inventory.nodes.map((n, i) => (i === 0 ? { ...n, nics: next } : n))
+      }
+    };
+  });
+}
+
+// syncPrimaryFromLegacy keeps disks[0] / nics[0] in lockstep with the
+// legacy primary fields when the array is populated. Step 4 calls this
+// after every primary-form mutation so adding extras doesn't fork the
+// "source of truth" for the OS disk / primary NIC.
+export function syncPrimaryFromLegacy(fallbackNetwork: string) {
+  wizardStore.update((s) => {
+    const node = s.inventory.nodes[0];
+    if (!node) return s;
+    let nextDisks = node.disks;
+    let nextNICs = node.nics;
+    if (node.disks && node.disks.length > 0) {
+      const primary = synthPrimaryDisk(node);
+      nextDisks = [{ ...node.disks[0], ...primary }, ...node.disks.slice(1)];
+    }
+    if (node.nics && node.nics.length > 0) {
+      const primary = synthPrimaryNIC(node, fallbackNetwork);
+      nextNICs = [{ ...node.nics[0], ...primary }, ...node.nics.slice(1)];
+    }
+    if (nextDisks === node.disks && nextNICs === node.nics) return s;
+    return {
+      ...s,
+      inventory: {
+        ...s.inventory,
+        nodes: s.inventory.nodes.map((n, i) => (i === 0 ? { ...n, disks: nextDisks, nics: nextNICs } : n))
+      }
+    };
+  });
 }
