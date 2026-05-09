@@ -21,21 +21,32 @@ import (
 type Stage string
 
 const (
-	StagePending     Stage = "pending"
-	StageSeedISO     Stage = "seed_iso"
-	StageDSUpload    Stage = "datastore_upload" // ESXi-only: push seed ISOs to vSphere datastore
-	StageTFInit      Stage = "terraform_init"
-	StageTFPlan      Stage = "terraform_plan"
-	StageTFApply     Stage = "terraform_apply"
-	StageWaitSSH     Stage = "wait_ssh"
-	StagePreflight   Stage = "preflight"
-	StageCeph        Stage = "ceph"
-	StageK8s         Stage = "kubernetes"
-	StageCSI         Stage = "csi"
-	StageAddons      Stage = "addons"
-	StageCompleted   Stage = "completed"
-	StageFailed      Stage = "failed"
+	StagePending   Stage = "pending"
+	StageSeedISO   Stage = "seed_iso"
+	StageDSUpload  Stage = "datastore_upload" // ESXi-only: push seed ISOs to vSphere datastore
+	StageTFInit    Stage = "terraform_init"
+	StageTFPlan    Stage = "terraform_plan"
+	StageTFApply   Stage = "terraform_apply"
+	StageWaitSSH   Stage = "wait_ssh"
+	StageVerify    Stage = "verify" // dev-vm only: SSH in, sanity-check OS install
+	StagePreflight Stage = "preflight"
+	StageCeph      Stage = "ceph"
+	StageK8s       Stage = "kubernetes"
+	StageCSI       Stage = "csi"
+	StageAddons    Stage = "addons"
+	StageCompleted Stage = "completed"
+	StageFailed    Stage = "failed"
 )
+
+// VerifyCheck is one row in the dev-vm verify stage's per-check result.
+// Persisted on Run.VerifyResults so Step 6/7 can render PASS/FAIL with
+// the exact command output that decided each result.
+type VerifyCheck struct {
+	ID     string `json:"id"`     // ssh_os_release | hostname_ip_mac | network_dns | package_manager
+	Label  string `json:"label"`  // human-readable label
+	Pass   bool   `json:"pass"`
+	Detail string `json:"detail,omitempty"`
+}
 
 type Run struct {
 	ID               string              `json:"id"`
@@ -51,6 +62,10 @@ type Run struct {
 	RKE2Token             string              `json:"rke2_token,omitempty"`         // generated once per run, kept for cluster joins
 	K3sToken              string              `json:"k3s_token,omitempty"`
 	CephDashboardPassword string              `json:"ceph_dashboard_password,omitempty"`
+
+	// VerifyResults is populated by the dev-vm verify stage after SSH
+	// reachability. Empty for cluster-mode runs.
+	VerifyResults []VerifyCheck `json:"verify_results,omitempty"`
 }
 
 type Event struct {

@@ -7,8 +7,15 @@
   import Badge from '../lib/ui/Badge.svelte';
   import { wizardStore, type Topology } from '../stores/wizard';
   import { api } from '../lib/api';
+  import logoSvg from '../assets/triangles-logo.svg?raw';
 
-  let mode = $state<'new' | 'resume'>($wizardStore.mode);
+  // 'new' is the legacy alias for 'new-cluster' kept for back-compat with
+  // saved sessions. The Step 1 mode picker normalises everything into the
+  // three-card model: new-cluster | new-vm | resume.
+  type Mode = 'new-cluster' | 'new-vm' | 'resume';
+  let mode = $state<Mode>(
+    $wizardStore.mode === 'new' ? 'new-cluster' : ($wizardStore.mode as Mode)
+  );
   let busy = $state(false);
   let fetchedDir = $state<string | null>($wizardStore.contentDir);
   let fetchErr = $state('');
@@ -33,9 +40,46 @@
     } finally { busy = false; }
   }
 
-  function setMode(m: 'new' | 'resume') {
+  function setMode(m: Mode) {
     mode = m;
-    wizardStore.update((s) => ({ ...s, mode: m }));
+    wizardStore.update((s) => {
+      const next = { ...s, mode: m };
+      // new-vm: pin topology to dev-vm and seed safe defaults so Step
+      // 2/3/4 render the single-VM flow immediately. Idempotent.
+      if (m === 'new-vm') {
+        next.inventory = {
+          ...next.inventory,
+          cluster: { ...next.inventory.cluster, topology: 'dev-vm' as Topology },
+          target: {
+            ...next.inventory.target,
+            type: 'esxi',
+            username: next.inventory.target.username || 'root',
+            tls_insecure: next.inventory.target.tls_insecure || true,
+            network: next.inventory.target.network || 'VM Network',
+          },
+          nodes: next.inventory.nodes.length === 0 ? [{
+            hostname: 'devvm-01',
+            ip: '',
+            roles: [],
+            os: 'ubuntu' as const,
+            os_version: '26.04',
+            cpu: 2,
+            memory_gb: 4,
+            disk_gb: 40,
+            ssh_authorized_keys: [],
+          }] : next.inventory.nodes,
+        };
+      }
+      // new-cluster from dev-vm: reset topology to a safe default so the
+      // user sees the cluster topology selector instead of a stale value.
+      if (m === 'new-cluster' && next.inventory.cluster.topology === 'dev-vm') {
+        next.inventory = {
+          ...next.inventory,
+          cluster: { ...next.inventory.cluster, topology: 'k8s-only' as Topology },
+        };
+      }
+      return next;
+    });
   }
 
   function setTopology(t: Topology) {
@@ -52,15 +96,22 @@
   const canAdvance = true;
 </script>
 
-<header class="step-header">
-  <h2>{$_('step.1.title')}</h2>
-  <p>{$_('step.1.subtitle')}</p>
+<header class="step-header welcome">
+  <div class="welcome-logo" aria-label="Triangles">{@html logoSvg}</div>
+  <div>
+    <h2>{$_('step.1.title')}</h2>
+    <p>{$_('step.1.subtitle')}</p>
+  </div>
 </header>
 
 <div class="grid">
-  <button class="mode-card" class:active={mode === 'new'} onclick={() => setMode('new')}>
+  <button class="mode-card" class:active={mode === 'new-cluster'} onclick={() => setMode('new-cluster')}>
     <strong>{$_('step1.modeNew')}</strong>
     <span>{$_('step1.modeNewDesc')}</span>
+  </button>
+  <button class="mode-card devvm" class:active={mode === 'new-vm'} onclick={() => setMode('new-vm')}>
+    <strong>{$_('step1.modeNewVM')}</strong>
+    <span>{$_('step1.modeNewVMDesc')}</span>
   </button>
   <button class="mode-card" class:active={mode === 'resume'} onclick={() => setMode('resume')}>
     <strong>{$_('step1.modeResume')}</strong>
@@ -68,7 +119,7 @@
   </button>
 </div>
 
-{#if mode === 'new'}
+{#if mode === 'new-cluster'}
   <Section title={$_('step1.topology')} subtitle={$_('step1.topologyHint')}>
     <div class="topo-grid">
       <button class="topo-card" class:active={topology === 'ceph-only'} onclick={() => setTopology('ceph-only')}>
@@ -131,6 +182,32 @@
       {#if fetchErr}<Badge tone="danger">{fetchErr}</Badge>{/if}
     </div>
   </Section>
+{:else if mode === 'new-vm'}
+  <Section title={$_('step1.devVMTitle')} subtitle={$_('step1.devVMSubtitle')}>
+    <div class="devvm-info">
+      <div class="devvm-row"><span class="devvm-label">{$_('step1.devVMHypervisor')}</span><code>VMware ESXi</code></div>
+      <div class="devvm-row"><span class="devvm-label">{$_('step1.devVMOS')}</span><code>Ubuntu 26.04 LTS</code> (Step 3에서 24.04로 변경 가능)</div>
+      <div class="devvm-row"><span class="devvm-label">{$_('step1.devVMSeed')}</span><code>cloud-init NoCloud + subiquity autoinstall</code></div>
+      <div class="devvm-row"><span class="devvm-label">{$_('step1.devVMVerify')}</span>SSH·os-release / hostname·IP·MAC / 네트워크·DNS / apt update</div>
+    </div>
+    <p class="muted">{$_('step1.devVMNote')}</p>
+  </Section>
+
+  <Section title={$_('step1.contentRepo')} subtitle={$_('step1.contentRepoHint')}>
+    <Field label={$_('step1.contentRepo')} hint="https://github.com/...">
+      <input bind:value={$wizardStore.inventory.content.repo} />
+    </Field>
+    <Field label={$_('step1.contentTag')} hint={$_('step1.contentTagHint')} required>
+      <input bind:value={$wizardStore.inventory.content.ref} placeholder="v0.1.0" />
+    </Field>
+    <div class="row">
+      <Button variant="primary" disabled={busy} onclick={fetchContent}>
+        {busy ? $_('common.loading') : $_('step1.fetchContent')}
+      </Button>
+      {#if fetchedDir}<Badge tone="success">{$_('step1.fetched')} {fetchedDir}</Badge>{/if}
+      {#if fetchErr}<Badge tone="danger">{fetchErr}</Badge>{/if}
+    </div>
+  </Section>
 {:else}
   <Section title={$_('step1.modeResume')}>
     {#if runs.length === 0}
@@ -160,13 +237,96 @@
   </Section>
 {/if}
 
+{#if mode === 'new-cluster' || mode === 'new-vm'}
+  <Section title="노드 인증 자격 증명"
+           subtitle="아래 정보는 새로 설치되는 노드의 sudo 계정 한 개에 모두 적용됩니다 — SSH 키, 콘솔 패스워드, sudoers NOPASSWD 항목이 같은 계정에 들어갑니다.">
+    <Field label="사용자명 (sudo 계정)"
+           hint={'기본 \'triangles\'. autoinstall이 이 이름으로 사용자를 만들고, 아래 SSH 키와 콘솔 패스워드를 이 계정에 적용합니다. SSH 접속도 ssh ' + ($wizardStore.inventory.cluster_auth.username || 'triangles') + '@<ip> 형태가 됩니다.'}
+           required>
+      <input value={$wizardStore.inventory.cluster_auth.username}
+             oninput={(e) => {
+               const v = (e.target as HTMLInputElement).value.trim();
+               wizardStore.update((s) => ({
+                 ...s,
+                 inventory: { ...s.inventory, cluster_auth: { ...s.inventory.cluster_auth, username: v } }
+               }));
+             }}
+             placeholder="triangles" />
+    </Field>
+    <Field label="GitHub 사용자명 (쉼표 구분)"
+           hint="github.com/<username>.keys 에서 SSH 키를 자동 가져옵니다 (ssh-import-id-gh). 여러 명 가능. 키 회전도 GitHub에서 하면 다음 설치부터 자동 반영.">
+      <input value={$wizardStore.inventory.cluster_auth.ssh_import_github.join(', ')}
+             oninput={(e) => {
+               const list = (e.target as HTMLInputElement).value.split(',').map((s) => s.trim()).filter(Boolean);
+               wizardStore.update((s) => ({
+                 ...s,
+                 inventory: { ...s.inventory, cluster_auth: { ...s.inventory.cluster_auth, ssh_import_github: list } }
+               }));
+             }}
+             placeholder="예: octocat, choimars" />
+    </Field>
+    <details class="auth-advanced">
+      <summary>또는 SSH 공개키 직접 붙여넣기 (오프라인 환경)</summary>
+      <Field label="SSH 공개키 (한 줄에 하나씩)"
+             hint="ssh-ed25519 / ssh-rsa 등. GitHub에 올리지 않은 키만 여기 붙여넣기. 보통은 위의 GitHub 방식이 더 편합니다.">
+        <textarea
+          rows="3"
+          value={$wizardStore.inventory.cluster_auth.ssh_authorized_keys.join('\n')}
+          oninput={(e) => {
+            const lines = (e.target as HTMLTextAreaElement).value.split('\n').map((l) => l.trim()).filter(Boolean);
+            wizardStore.update((s) => ({
+              ...s,
+              inventory: { ...s.inventory, cluster_auth: { ...s.inventory.cluster_auth, ssh_authorized_keys: lines } }
+            }));
+          }}
+          placeholder={"ssh-ed25519 AAAAC3Nza... user@host"}
+          style="width: 100%; font-family: ui-monospace, monospace; font-size: 0.78rem; resize: vertical; box-sizing: border-box;"></textarea>
+      </Field>
+    </details>
+    <Field label="콘솔 패스워드 (선택)"
+           hint={'위 \'' + ($wizardStore.inventory.cluster_auth.username || 'triangles') + '\' 사용자와 root의 콘솔/sudo 패스워드. 비워두면 SSH 키만 사용 (권장). run.json에 평문 보관되니 외부 공유 금지.'}>
+      <input type="password"
+             value={$wizardStore.inventory.cluster_auth.node_password}
+             oninput={(e) => {
+               const v = (e.target as HTMLInputElement).value;
+               wizardStore.update((s) => ({
+                 ...s,
+                 inventory: { ...s.inventory, cluster_auth: { ...s.inventory.cluster_auth, node_password: v } }
+               }));
+             }}
+             placeholder="비워두면 SSH 키만 사용" />
+    </Field>
+  </Section>
+{/if}
+
 <StepNav canAdvance={canAdvance} />
 
 <style>
+  details.auth-advanced { margin: 0.4rem 0; padding: 0; }
+  details.auth-advanced > summary {
+    cursor: pointer; font-size: 0.78rem; color: #71717a;
+    padding: 0.3rem 0; user-select: none;
+  }
+  details.auth-advanced > summary:hover { color: #d4d4d8; }
+  details.auth-advanced[open] > summary { color: #d4d4d8; margin-bottom: 0.3rem; }
+
   .step-header { margin-bottom: 1.25rem; }
   .step-header h2 { margin: 0; font-size: 1.3rem; }
   .step-header p { margin: 0.25rem 0 0; color: #a1a1aa; font-size: 0.9rem; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem; }
+  .step-header.welcome { display: flex; align-items: center; gap: 1rem;
+                         padding: 0.5rem 0 1rem; }
+  .welcome-logo { display: block; line-height: 0;
+                  filter: drop-shadow(0 0 16px rgba(0, 117, 194, 0.45)); }
+  .welcome-logo :global(svg) { width: 72px; height: 72px; display: block; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1.25rem; }
+  @media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } }
+  .mode-card.devvm.active { border-color: #10b981; background: #052e29; }
+  .devvm-info { display: flex; flex-direction: column; gap: 0.4rem; margin-bottom: 0.5rem; }
+  .devvm-row { display: grid; grid-template-columns: 10rem 1fr; gap: 0.5rem;
+               align-items: center; font-size: 0.85rem; color: #d4d4d8; }
+  .devvm-label { color: #71717a; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  .devvm-info code { background: #0f0f12; padding: 0.2rem 0.5rem; border-radius: 3px;
+                     font-family: ui-monospace, monospace; font-size: 0.82rem; color: #93c5fd; }
   .mode-card { display: flex; flex-direction: column; gap: 0.4rem; align-items: flex-start;
                padding: 1rem 1.25rem; border-radius: 8px; cursor: pointer;
                background: #1b1b1f; border: 1px solid #2a2a30; color: inherit;

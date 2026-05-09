@@ -50,12 +50,31 @@ needs ISO remaster (tracked in `docs/phase-1-open-items.md`).
 
 ## Build prerequisites (developer machine)
 
-- Go ≥ 1.23
-- Wails CLI v2 (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`)
-- Node.js ≥ 20
+The repo ships a one-shot bootstrap that downloads a project-local Go
+toolchain and the Wails CLI into `%LOCALAPPDATA%\cluster-installer\tooling\`
+— **no system-level Go/Wails install required**. Only Node.js ≥ 20 must
+already be present (used for the frontend build).
 
-Build: `cd app && go mod tidy && wails build` produces
-`app/build/bin/cluster-installer.exe`.
+```
+build.exe        # double-click — downloads Go + Wails, runs `wails build`
+                 # output: cluster-installer.exe at the repo root
+cluster-installer.exe   # double-click to run the wizard
+stop.exe         # emergency cleanup if the app or a dev server hangs
+```
+
+`build.exe` is idempotent: subsequent runs reuse the cached toolchain in
+`%LOCALAPPDATA%\cluster-installer\tooling\`, so only the app rebuild
+(seconds) actually runs.
+
+To customise versions, run `tools\build.ps1` directly:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\build.ps1 `
+  -GoVersion 1.23.4 -WailsVersion v2.9.2
+```
+
+If you already have Go ≥ 1.23 and Wails on your PATH, the classic flow
+still works: `cd app && go mod tidy && wails build`.
 
 See [docs/getting-started.md](docs/getting-started.md) for the full
 developer workflow.

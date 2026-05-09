@@ -30,7 +30,16 @@
   },
   "step1": {
     "modeNew": "신규 클러스터 생성",
-    "modeNewDesc": "비어있는 인벤토리부터 시작합니다",
+    "modeNewDesc": "비어있는 인벤토리부터 시작합니다 (Ceph / K8s / 통합)",
+    "modeNewVM": "신규 VM 생성",
+    "modeNewVMDesc": "단일 VM 무인 자동 설치 검증 — ESXi + Ubuntu. 클러스터의 가장 작은 단위.",
+    "devVMTitle": "단일 VM 무인 자동 설치",
+    "devVMSubtitle": "VM 한 대만 만들고 OS 무인 설치 정확성을 검증합니다 — 클러스터 OS 설치 신뢰성의 기반.",
+    "devVMHypervisor": "하이퍼바이저",
+    "devVMOS": "OS",
+    "devVMSeed": "시드 메커니즘",
+    "devVMVerify": "Verify 자동 검증",
+    "devVMNote": "다음 단계에서 ESXi 접속 정보 → Ubuntu 버전 → 호스트네임/IP/SSH 키만 입력하시면 됩니다.",
     "modeResume": "기존 작업 재개",
     "modeResumeDesc": "%LOCALAPPDATA%\\cluster-installer\\runs 에 저장된 진행 중 런",
     "topology": "어떤 클러스터를 만드시겠습니까?",
@@ -73,8 +82,8 @@
     "rootPasswordHint": "ESXi는 단일 root 패스워드로 vSphere SOAP과 SSH 둘 다 인증. %LOCALAPPDATA%의 run.json에 저장됨 — 외부 공유 금지",
     "datastore": "데이터스토어",
     "datastoreHint": "ESXi 호스트의 저장 공간 이름 — VM 가상 디스크(.vmdk)와 시드 ISO 파일이 저장됩니다. 예: datastore1, SSD-RAID0-4Ti-02",
-    "isoDatastore": "ISO 업로드 데이터스토어",
-    "isoDatastoreHint": "ISO 파일만 따로 보관할 데이터스토어. 비워두면 위 데이터스토어와 동일하게 사용",
+    "isoDatastore": "데이터스토어 (ISO 업로드용)",
+    "isoDatastoreHint": "이미지(.iso) 파일이 업로드될 ESXi 데이터스토어. VM 가상 디스크는 Step 4에서 노드별로 따로 지정합니다 — 이렇게 분리하면 \"작은 데이터스토어에 OSD 디스크가 떨어지는\" 사고를 구조적으로 차단합니다.",
     "network": "포트 그룹",
     "networkHint": "VM이 연결될 ESXi 가상 스위치의 포트 그룹 이름 — ESXi 기본은 'VM Network'",
     "datastoreHelpTitle": "데이터스토어/포트 그룹은 어떻게 확인하나요?",
@@ -112,8 +121,16 @@
       "leap": "openSUSE Leap 16",
       "leapDesc": "안정 LTS, zypper 즉시 패키지 설치. Ceph OSD/MON 등 패키지 유연성이 필요한 노드 추천.",
       "tumbleweed": "openSUSE Tumbleweed",
-      "tumbleweedDesc": "롤링 릴리즈, 최신 커널/패키지. 개발/실험용."
-    }
+      "tumbleweedDesc": "롤링 릴리즈, 최신 커널/패키지. 개발/실험용.",
+      "ubuntu": "Ubuntu 26.04 LTS",
+      "ubuntuDesc": "Canonical LTS Server. Subiquity autoinstall(cloud-init NoCloud) 무인 설치. Ceph cephadm/RKE2/K3s 모두 공식 지원. apt/AppArmor 환경.",
+      "ubuntu26Desc": "1차 자동화 대상. cloud-init + subiquity autoinstall, apt 생태계, vmxnet3 (ens192) 기본 지원.",
+      "ubuntu24Desc": "안정성 회귀 안전망. 26.04에서 subiquity 스키마 문제가 발견되면 24.04로 즉시 비교 가능."
+    },
+    "devVMHint": "독립 VM 한 대를 무인 자동 설치합니다. 설치할 OS만 고르세요.",
+    "devVMSectionTitle": "설치할 OS",
+    "devVMOnlyUbuntuNote": "v1: Ubuntu LTS만 지원합니다. 다른 OS(Leap, RHEL 계열 등)는 카탈로그 추가만 하면 동일 흐름으로 확장 가능 — 다음 단계에서 처리.",
+    "recommended": "권장"
   },
   "step4": {
     "cluster": "클러스터 메타",
@@ -142,6 +159,8 @@
       "ip": "IP",
       "clusterIP": "Cluster IP",
       "clusterIPHint": "Ceph OSD 전용 백엔드 네트워크 IP (선택)",
+      "clusterIPDisabledHint": "이 노드는 OSD 역할이 없어 cluster network IP가 필요 없습니다.",
+      "osReadOnlyHint": "Step 3에서 역할(K8s/Ceph)별로 선택한 OS가 자동 적용됩니다. 변경하려면 Step 3로 이동.",
       "os": "OS",
       "roles": "역할",
       "cpu": "CPU",
@@ -162,7 +181,31 @@
     "preview": "YAML 미리보기",
     "validation": "검증 결과",
     "validationOk": "✓ 인벤토리가 스키마를 통과했습니다",
-    "validationErr": "검증 실패"
+    "validationErr": "검증 실패",
+    "devVMSubtitle": "독립 VM 한 대를 만들고 OS 무인 자동 설치를 검증합니다. 클러스터·네트워크 CIDR·역할 같은 설정은 사용되지 않습니다.",
+    "devVMSection": "VM 명세",
+    "devVMSectionHint": "호스트네임·IP·자원 사양만 채우면 됩니다. SSH 키는 Step 1에서 입력한 값이 그대로 적용됩니다.",
+    "devVM": {
+      "prefixLen": "서브넷 prefix length",
+      "ipMode": "IP 모드",
+      "ipModeStatic": "고정 IP",
+      "ipModeStaticHint": "지정한 IP·게이트웨이로 설치. 가장 일반적.",
+      "ipModeDHCPHint": "DHCP 서버에서 자동 할당. IP/게이트웨이 입력 불필요.",
+      "ipDHCPHint": "(선택) verify 단계 SSH 접속용 — DHCP 정적 lease가 있다면 입력",
+      "dhcpNote": "DHCP 모드: 고정 IP·게이트웨이 입력은 무시됩니다. autoinstall이 NIC를 dhcp4: true로 설정합니다. verify 단계에서 SSH 접속하려면 DHCP 정적 lease로 IP를 알 수 있어야 합니다 (선택 입력).",
+      "datastore": "VM 디스크 데이터스토어",
+      "datastoreHint": "VM의 가상 디스크가 저장될 ESXi 데이터스토어. Step 2의 '연결 + 리소스 가져오기'를 누르면 드롭다운에 자동 채워집니다.",
+      "datastorePicker": "데이터스토어 선택",
+      "diskProvisioning": "디스크 프로비저닝",
+      "diskProvisioningHint": "thin: 사용한 만큼 할당 (기본). thick: 즉시 할당. thick-eager: 즉시 할당 + 0 채움 (가장 일관된 I/O).",
+      "hostname": "호스트네임 (OS 내부)",
+      "hostnameHint": "VM 안의 /etc/hostname, 프롬프트, SSH 호스트키 식별자 등에 사용되는 이름",
+      "displayName": "VM 이름 (vSphere 표시명, 선택)",
+      "displayNameHint": "vSphere Web UI 인벤토리 트리에 보이는 이름. 비워두면 위 호스트네임 사용. 다르게 두려면 입력.",
+      "invalidIPv4": "유효하지 않은 IPv4 주소",
+      "nameserverHint": "각 항목은 점 4개로 구분된 IP여야 합니다 (예: 10.10.1.3 — '10.10.13' 같은 옥텟 누락은 netplan apply 단계에서 거부됩니다)",
+      "note": "이 모드에서는 cluster.kubernetes / network.vip / lb_pool / Ceph 설정이 모두 무시됩니다 — 단일 VM 무인 자동 설치만 수행."
+    }
   },
   "step5": {
     "summary": "이 클러스터가 만들어집니다",
@@ -190,6 +233,7 @@
       "terraform_plan": "Terraform plan",
       "terraform_apply": "VM 생성 + OS 무인 설치",
       "wait_ssh": "SSH 헬스 대기",
+      "verify": "무인 설치 검증",
       "preflight": "노드 사전 준비",
       "ceph": "Ceph 부트스트랩",
       "kubernetes": "Kubernetes 설치",
@@ -197,7 +241,10 @@
       "addons": "Day-2 애드온",
       "completed": "완료",
       "failed": "실패"
-    }
+    },
+    "verifyTitle": "무인 설치 검증",
+    "verifySubtitle": "VM에 SSH로 접속해 4가지 항목을 자동 점검합니다.",
+    "verifyDetail": "상세"
   },
   "step7": {
     "kubeconfig": "kubeconfig",
@@ -216,7 +263,21 @@
       "kubectl get nodes 로 클러스터 상태 확인",
       "ceph -s 로 스토리지 헬스 확인 (mon 노드에서)",
       "GitOps 사용 시 Argo CD에 첫 Application 등록"
-    ]
+    ],
+    "devVMSubtitle": "단일 VM의 결과 + verify 검증 요약 + 재배포",
+    "devVMSummary": "VM 요약",
+    "devVMHostname": "호스트네임",
+    "devVMIP": "IP",
+    "devVMOS": "OS",
+    "devVMResources": "리소스",
+    "devVMSSH": "SSH 접속",
+    "devVMVerify": "무인 설치 자동 검증 결과",
+    "devVMVerifyHint": "최근 verify 단계의 PASS/FAIL 기록입니다.",
+    "devVMRedeploy": "재배포",
+    "devVMRedeployHint": "현재 인벤토리로 동일 VM을 다시 만듭니다 (terraform apply 재실행). MAC/IP는 같은 값으로 유지.",
+    "devVMRedeployBtn": "재배포 시작",
+    "devVMRedeployNote": "v1: terraform destroy + apply 사이클은 ESXi 측에서 직접 VM을 지운 뒤 진행해 주세요. 향후 버전에서 자동화 예정.",
+    "verifyDetail": "상세"
   },
   "lang": {
     "label": "언어",

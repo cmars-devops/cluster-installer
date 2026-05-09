@@ -11,9 +11,68 @@
   const k8sRoles: Role[]  = ['control-plane', 'etcd', 'worker'];
   const cephRoles: Role[] = ['ceph-mon', 'ceph-mgr', 'ceph-osd', 'ceph-mds', 'ceph-rgw'];
 
+  // Ceph cluster_network는 OSD 데몬 간 트래픽 전용. mon/mgr/mds/rgw는 바인드하지 않음.
+  function isCephCoreOnly(roles: Role[]): boolean {
+    const hasAnyCeph = roles.some((r) => r.startsWith('ceph-'));
+    const hasOSD = roles.includes('ceph-osd');
+    return hasAnyCeph && !hasOSD;
+  }
+
+  // OS 라벨은 Step 3에서 결정. Step 4에서는 읽기 전용 표시만.
+  function osLabel(os: NodeSpec['os']): string {
+    switch (os) {
+      case 'microos':    return 'openSUSE MicroOS';
+      case 'leap':       return 'openSUSE Leap 16';
+      case 'tumbleweed': return 'openSUSE Tumbleweed';
+      case 'ubuntu':     return 'Ubuntu 26.04 LTS';
+      default:           return os;
+    }
+  }
+
   const topology = $derived($wizardStore.inventory.cluster.topology);
+  const devVMMode = $derived(topology === 'dev-vm');
   const showK8s   = $derived(topology === 'k8s-only'  || topology === 'combined');
   const showCeph  = $derived(topology === 'ceph-only' || topology === 'combined');
+
+  // ── dev-vm: single VM, no roles, no cluster networking ─────────────
+  // The whole "독립적인 VM" UX lives here. nodes[0] is the only node.
+  const devVMNode = $derived<NodeSpec | undefined>(
+    devVMMode ? $wizardStore.inventory.nodes[0] : undefined
+  );
+  function updateDevVMNode(patch: Partial<NodeSpec>) { updateNode(0, patch); }
+  function updateNetwork(patch: Partial<typeof $wizardStore.inventory.network>) {
+    wizardStore.update((s) => ({
+      ...s,
+      inventory: { ...s.inventory, network: { ...s.inventory.network, ...patch } }
+    }));
+  }
+  function setNameserversText(value: string) {
+    updateNetwork({
+      nameservers: value.split(',').map((x) => x.trim()).filter(Boolean)
+    });
+  }
+
+  // IPv4 dotted-quad sanity check: each octet 0-255, exactly four of them.
+  // Used to gate "다음" and to render an inline warning so a typo like
+  // 10.10.1.3 → 10.10.13 doesn't slip into netplan and fail the install.
+  function isValidIPv4(s: string): boolean {
+    const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
+    if (!m) return false;
+    for (let i = 1; i <= 4; i++) {
+      const n = +m[i];
+      if (!(n >= 0 && n <= 255)) return false;
+    }
+    return true;
+  }
+  const invalidNameservers = $derived(
+    ($wizardStore.inventory.network.nameservers ?? []).filter((n) => !isValidIPv4(n))
+  );
+  const invalidGateway = $derived(
+    !!$wizardStore.inventory.network.gateway && !isValidIPv4($wizardStore.inventory.network.gateway)
+  );
+  const invalidIP = $derived(
+    !!devVMNode?.ip && !isValidIPv4(devVMNode.ip)
+  );
   const visibleRoles = $derived(
     topology === 'ceph-only' ? cephRoles
     : topology === 'k8s-only' ? k8sRoles
@@ -127,9 +186,13 @@
   }
 
   function toggleRole(idx: number, role: Role, checked: boolean) {
-    const cur = $wizardStore.inventory.nodes[idx].roles;
-    const next = checked ? [...cur, role] : cur.filter((r) => r !== role);
-    updateNode(idx, { roles: next });
+    const node = $wizardStore.inventory.nodes[idx];
+    const next = checked ? [...node.roles, role] : node.roles.filter((r) => r !== role);
+    const patch: Partial<NodeSpec> = { roles: next };
+    if (isCephCoreOnly(next) && node.cluster_ip) {
+      patch.cluster_ip = undefined;
+    }
+    updateNode(idx, patch);
   }
 
   // ── Preset definitions — each describes a role family with sensible
@@ -212,16 +275,24 @@
       hostnamePrefix: 'ceph-osd',
       ipBase: 91, cidr3: '10.10.1',
       clusterIPBase: 91, clusterCidr3: '172.16.1',     // OSD 백엔드 복제 네트워크
-      defaultCount: 3, countOptions: [3, 4, 5, 6, 7, 8, 10, 12],
+      defaultCount: 3, countOptions: [1, 2, 3, 4, 5, 6, 7, 8, 10, 12],
       template: {
         roles: ['ceph-osd'], os: 'leap',
         cpu: 4, memory_gb: 6, disk_gb: 64,
         data_devices: ['/dev/sdb'],
         db_devices:   ['/dev/sdc'],
+        // Per-node disk sizes — heterogeneous OSD clusters can override
+        // these freely (different OSD nodes can have different HDD/SSD
+        // sizes without a cluster-wide default).
+        osd_data_size_gb: 64,
+        osd_db_size_gb: 16,
         device_class: 'hdd',
         osds_per_device: 1,
         osd_encrypted: false,
-        disk_provisioning: 'thick-eager'   // OSD: avoid first-write penalty
+        // Thin: VM provisioning is hardware allocation only. Thick-eager
+        // (zero-fill at create) is a deployment-time perf decision —
+        // operators flip per-node before Apply if they want it.
+        disk_provisioning: 'thin'
       }
     },
     {
@@ -322,14 +393,20 @@
     const p = PRESETS.find(x => x.kind === kind);
     if (!p) return;
     let startIdx = nextHostnameIndex(p.hostnamePrefix);
-    // For k3s-single (single-node) and any preset whose first add-batch is
-    // expected to use 'NN-01', ensure we always start at 01 if no existing.
+    // Step 3에서 선택한 OS 선호도를 적용 — 프리셋 템플릿에 하드코딩된
+    // os 필드(leap/microos)는 무시하고 ceph-* 프리셋이면 cephOS,
+    // 그 외는 k8sOS로 덮어씀.
+    const isCephPreset = p.template.roles?.some((r) => r.startsWith('ceph-')) ?? false;
+    const preferredOS = isCephPreset
+      ? $wizardStore.osPreferences.ceph
+      : $wizardStore.osPreferences.k8s;
     for (let n = 0; n < count; n++) {
       const idx = startIdx + n;
       const idxStr = String(idx).padStart(2, '0');
       const lastOct = p.ipBase + idx - 1;
       const node: Partial<NodeSpec> = {
         ...p.template,
+        os: preferredOS,
         hostname: p.kind === 'k3s-single' && idx === 1
           ? 'k3s-server-01'
           : `${p.hostnamePrefix}-${idxStr}`,
@@ -574,8 +651,7 @@ network:
 target:
   type: ${inv.target.type}
   endpoint: ${inv.target.endpoint}
-nodes:
-${inv.nodes.map((n) => `  - hostname: ${n.hostname}
+nodes:${inv.nodes.length === 0 ? ' []' : '\n' + inv.nodes.map((n) => `  - hostname: ${n.hostname}
     ip: ${n.ip}${n.cluster_ip ? `\n    cluster_ip: ${n.cluster_ip}` : ''}
     roles: [${n.roles.join(', ')}]
     os: ${n.os}
@@ -615,8 +691,142 @@ content:
 
 <header class="step-header">
   <h2>{$_('step.4.title')}</h2>
-  <p>{$_('step.4.subtitle')}</p>
+  <p>{devVMMode ? $_('step4.devVMSubtitle') : $_('step.4.subtitle')}</p>
 </header>
+
+{#if devVMMode && devVMNode}
+  {@const ipMode = devVMNode.ip_mode ?? 'static'}
+  {@const isStatic = ipMode === 'static'}
+  {@const dsAvailable = ($wizardStore.discovered.datastores ?? []).filter((d) => d.accessible !== false)}
+  {@const staticOK = ipMode !== 'static' || (!!devVMNode.ip && !invalidIP && !!$wizardStore.inventory.network.gateway && !invalidGateway && invalidNameservers.length === 0)}
+  {@const canAdvance = !!devVMNode.hostname && (ipMode === 'dhcp' || (!!devVMNode.ip && staticOK)) && !!(devVMNode.datastore || $wizardStore.inventory.target.datastore)}
+
+  <Section title={$_('step4.devVMSection')} subtitle={$_('step4.devVMSectionHint')}>
+    <div class="grid-2">
+      <Field label={$_('step4.devVM.hostname')} hint={$_('step4.devVM.hostnameHint')} required>
+        <input value={devVMNode.hostname}
+               oninput={(e) => updateDevVMNode({ hostname: (e.target as HTMLInputElement).value })}
+               placeholder="devvm-01" />
+      </Field>
+      <Field label={$_('step4.devVM.displayName')} hint={$_('step4.devVM.displayNameHint')}>
+        <input value={devVMNode.display_name ?? ''}
+               oninput={(e) => updateDevVMNode({ display_name: (e.target as HTMLInputElement).value })}
+               placeholder={devVMNode.hostname || '(호스트네임과 동일)'} />
+      </Field>
+    </div>
+
+    <!-- IP 모드: DHCP / Static -->
+    <div class="ipmode-row">
+      <span class="ipmode-label">{$_('step4.devVM.ipMode')}</span>
+      <label class="ipmode-radio">
+        <input type="radio" name="ipmode" checked={ipMode === 'dhcp'}
+               onchange={() => updateDevVMNode({ ip_mode: 'dhcp', ip: '' })} />
+        <span>DHCP</span>
+        <small>{$_('step4.devVM.ipModeDHCPHint')}</small>
+      </label>
+      <label class="ipmode-radio">
+        <input type="radio" name="ipmode" checked={ipMode === 'static'}
+               onchange={() => updateDevVMNode({ ip_mode: 'static' })} />
+        <span>{$_('step4.devVM.ipModeStatic')}</span>
+        <small>{$_('step4.devVM.ipModeStaticHint')}</small>
+      </label>
+    </div>
+
+    {#if isStatic}
+      <div class="grid-2">
+        <Field label={$_('step4.node.ip')} hint="10.10.1.50" required>
+          <input value={devVMNode.ip}
+                 class:input-error={invalidIP}
+                 oninput={(e) => updateDevVMNode({ ip: (e.target as HTMLInputElement).value })} />
+          {#if invalidIP}
+            <span class="input-warn">⚠ {$_('step4.devVM.invalidIPv4')}: <code>{devVMNode.ip}</code></span>
+          {/if}
+        </Field>
+        <Field label={$_('step4.gateway')} hint="10.10.1.1" required>
+          <input value={$wizardStore.inventory.network.gateway}
+                 class:input-error={invalidGateway}
+                 oninput={(e) => updateNetwork({ gateway: (e.target as HTMLInputElement).value })} />
+          {#if invalidGateway}
+            <span class="input-warn">⚠ {$_('step4.devVM.invalidIPv4')}: <code>{$wizardStore.inventory.network.gateway}</code></span>
+          {/if}
+        </Field>
+        <Field label={$_('step4.devVM.prefixLen')} hint="/24 → 24">
+          <input type="number" min="8" max="30"
+                 value={$wizardStore.inventory.network.prefix_len ?? 24}
+                 oninput={(e) => updateNetwork({ prefix_len: +(e.target as HTMLInputElement).value || 24 })} />
+        </Field>
+        <Field label={$_('step4.nameservers')} hint="1.1.1.1, 8.8.8.8">
+          <input value={$wizardStore.inventory.network.nameservers.join(', ')}
+                 class:input-error={invalidNameservers.length > 0}
+                 oninput={(e) => setNameserversText((e.target as HTMLInputElement).value)} />
+          {#if invalidNameservers.length > 0}
+            <span class="input-warn">⚠ {$_('step4.devVM.invalidIPv4')}: <code>{invalidNameservers.join(', ')}</code> — {$_('step4.devVM.nameserverHint')}</span>
+          {/if}
+        </Field>
+      </div>
+    {:else}
+      <p class="muted dhcp-note">{$_('step4.devVM.dhcpNote')}</p>
+      <Field label={$_('step4.node.ip')} hint={$_('step4.devVM.ipDHCPHint')}>
+        <input value={devVMNode.ip}
+               oninput={(e) => updateDevVMNode({ ip: (e.target as HTMLInputElement).value })}
+               placeholder="10.10.1.50 (선택, verify 단계용)" />
+      </Field>
+    {/if}
+
+    <!-- VM 자원 -->
+    <div class="grid-3" style="margin-top: 0.5rem;">
+      <Field label={$_('step4.node.cpu')}>
+        <input type="number" min="1"
+               value={devVMNode.cpu}
+               oninput={(e) => updateDevVMNode({ cpu: +(e.target as HTMLInputElement).value || 2 })} />
+      </Field>
+      <Field label={$_('step4.node.ram')}>
+        <input type="number" min="1"
+               value={devVMNode.memory_gb}
+               oninput={(e) => updateDevVMNode({ memory_gb: +(e.target as HTMLInputElement).value || 4 })} />
+      </Field>
+      <Field label={$_('step4.node.disk')}>
+        <input type="number" min="10"
+               value={devVMNode.disk_gb}
+               oninput={(e) => updateDevVMNode({ disk_gb: +(e.target as HTMLInputElement).value || 40 })} />
+      </Field>
+    </div>
+
+    <!-- 디스크 데이터스토어 + 프로비저닝 -->
+    <div class="grid-2">
+      <Field label={$_('step4.devVM.datastore')} hint={$_('step4.devVM.datastoreHint')} required>
+        {#if dsAvailable.length > 0}
+          <select value={devVMNode.datastore ?? ''}
+                  onchange={(e) => updateDevVMNode({ datastore: (e.target as HTMLSelectElement).value })}>
+            <option value="">— {$_('step4.devVM.datastorePicker')} —</option>
+            {#each dsAvailable as ds}
+              <option value={ds.name}>
+                {ds.name}{ds.type ? ` (${ds.type}` : ''}{ds.free_gb ? `, ${ds.free_gb.toFixed(0)} / ${ds.capacity_gb?.toFixed(0)} GB` : ''}{ds.type ? ')' : ''}
+              </option>
+            {/each}
+          </select>
+        {:else}
+          <input value={devVMNode.datastore ?? ''}
+                 oninput={(e) => updateDevVMNode({ datastore: (e.target as HTMLInputElement).value })}
+                 placeholder="datastore1 (Step 2 → '연결 + 리소스 가져오기'로 자동 채움 가능)" />
+        {/if}
+      </Field>
+
+      <Field label={$_('step4.devVM.diskProvisioning')} hint={$_('step4.devVM.diskProvisioningHint')}>
+        <select value={devVMNode.disk_provisioning ?? 'thin'}
+                onchange={(e) => updateDevVMNode({ disk_provisioning: (e.target as HTMLSelectElement).value as 'thin' | 'thick' | 'thick-eager' })}>
+          <option value="thin">thin (희소 할당, 기본)</option>
+          <option value="thick">thick (즉시 할당, lazy zeroed)</option>
+          <option value="thick-eager">thick-eager (즉시 할당 + 0 채움, 가장 안정적)</option>
+        </select>
+      </Field>
+    </div>
+
+    <p class="muted">{$_('step4.devVM.note')}</p>
+  </Section>
+
+  <StepNav {canAdvance} />
+{:else}
 
 <div class="layout">
   <div class="form-col">
@@ -784,8 +994,8 @@ content:
     {/if}
 
     {#if showCeph}
-      <Section title="Ceph 구성"
-               subtitle="Ceph 데몬 네트워크와 풀 — 스토리지 노드들이 사용하는 네트워크는 K8s와 별개입니다.">
+      <Section title="Ceph 데몬 네트워크"
+               subtitle="OSD 디스크 사이즈는 노드 행을 펼쳐서 노드별로 직접 지정 — 노드마다 다른 디스크 구성이 가능합니다. 풀 / replica / failure-domain 같은 Ceph 운영 결정은 아래 별도 섹션(접힘)에서 하거나 클러스터 부트스트랩 후 ceph 명령으로 조정.">
         <div class="grid-2">
           <Field label="Public network (CIDR)"
                  hint="mon/mgr/mds/osd가 클라이언트와 통신하는 네트워크. 모든 Ceph 노드 IP가 이 CIDR에 들어가야 함.">
@@ -801,88 +1011,73 @@ content:
           </Field>
         </div>
 
-        <Field label="활성화할 풀"
-               hint="rbd: K8s PVC 블록 / cephfs: ReadWriteMany 파일 / rgw: S3 호환 오브젝트">
-          <div class="pool-row">
-            <label class="pool-chip" class:active={$wizardStore.inventory.ceph.pools.includes('rbd')}>
+        <details class="cephadm-advanced">
+          <summary>
+            <span class="adv-title">Ceph 클러스터 운영 설정</span>
+            <span class="adv-sub">cephadm 부트스트랩 시점에 적용 — VM 생성과 무관, 클러스터 가동 후 <code>ceph osd pool</code> / <code>ceph orch</code>로도 조정 가능</span>
+          </summary>
+          <div class="adv-body">
+            <Field label="활성화할 풀"
+                   hint="rbd: K8s PVC 블록 / cephfs: ReadWriteMany 파일 / rgw: S3 호환 오브젝트">
+              <div class="pool-row">
+                <label class="pool-chip" class:active={$wizardStore.inventory.ceph.pools.includes('rbd')}>
+                  <input type="checkbox"
+                         checked={$wizardStore.inventory.ceph.pools.includes('rbd')}
+                         onchange={(e) => togglePool('rbd', (e.target as HTMLInputElement).checked)} />
+                  RBD <span class="pool-sub">(블록)</span>
+                </label>
+                <label class="pool-chip" class:active={$wizardStore.inventory.ceph.pools.includes('cephfs')}>
+                  <input type="checkbox"
+                         checked={$wizardStore.inventory.ceph.pools.includes('cephfs')}
+                         onchange={(e) => togglePool('cephfs', (e.target as HTMLInputElement).checked)} />
+                  CephFS <span class="pool-sub">(파일·RWX)</span>
+                </label>
+                <label class="pool-chip" class:active={$wizardStore.inventory.ceph.pools.includes('rgw')}>
+                  <input type="checkbox"
+                         checked={$wizardStore.inventory.ceph.pools.includes('rgw')}
+                         onchange={(e) => togglePool('rgw', (e.target as HTMLInputElement).checked)} />
+                  RGW <span class="pool-sub">(S3)</span>
+                </label>
+              </div>
+            </Field>
+
+            <div class="grid-3">
+              <Field label="복제 수 (replica)"
+                     hint="RBD/CephFS 풀의 기본 replica. 3 = 표준 (host 2개 손실 OK), 2 = 랩 전용, 1 = 단일 노드만.">
+                <select value={String($wizardStore.inventory.ceph.replication ?? 3)}
+                        onchange={(e) => updateCeph({ replication: +(e.target as HTMLSelectElement).value })}>
+                  <option value="1">1 (단일 노드)</option>
+                  <option value="2">2 (랩 전용)</option>
+                  <option value="3">3 (표준 — 권장)</option>
+                  <option value="4">4 (고가용)</option>
+                  <option value="5">5 (최고가용)</option>
+                </select>
+              </Field>
+              <Field label="Failure domain (CRUSH)"
+                     hint="복제본을 분산할 단위. 'host': 노드 단위(표준), 'rack'/'chassis': CRUSH 토폴로지 사전 설정 필요, 'osd': 비권장.">
+                <select value={$wizardStore.inventory.ceph.failure_domain ?? 'host'}
+                        onchange={(e) => updateCeph({ failure_domain: (e.target as HTMLSelectElement).value as 'host' | 'rack' | 'chassis' | 'osd' })}>
+                  <option value="host">host (표준)</option>
+                  <option value="rack">rack</option>
+                  <option value="chassis">chassis</option>
+                  <option value="osd">osd (비권장)</option>
+                </select>
+              </Field>
+              <Field label="기본 OSDs per device"
+                     hint="노드별 osds_per_device가 비어있을 때 사용. 일반 클러스터: 1.">
+                <input type="number" min="1" max="16"
+                       value={$wizardStore.inventory.ceph.default_osds_per_device ?? 1}
+                       oninput={(e) => updateCeph({ default_osds_per_device: +(e.target as HTMLInputElement).value || 1 })} />
+              </Field>
+            </div>
+            <label class="checkbox">
               <input type="checkbox"
-                     checked={$wizardStore.inventory.ceph.pools.includes('rbd')}
-                     onchange={(e) => togglePool('rbd', (e.target as HTMLInputElement).checked)} />
-              RBD <span class="pool-sub">(블록)</span>
-            </label>
-            <label class="pool-chip" class:active={$wizardStore.inventory.ceph.pools.includes('cephfs')}>
-              <input type="checkbox"
-                     checked={$wizardStore.inventory.ceph.pools.includes('cephfs')}
-                     onchange={(e) => togglePool('cephfs', (e.target as HTMLInputElement).checked)} />
-              CephFS <span class="pool-sub">(파일·RWX)</span>
-            </label>
-            <label class="pool-chip" class:active={$wizardStore.inventory.ceph.pools.includes('rgw')}>
-              <input type="checkbox"
-                     checked={$wizardStore.inventory.ceph.pools.includes('rgw')}
-                     onchange={(e) => togglePool('rgw', (e.target as HTMLInputElement).checked)} />
-              RGW <span class="pool-sub">(S3)</span>
+                     checked={$wizardStore.inventory.ceph.default_encrypted ?? false}
+                     onchange={(e) => updateCeph({ default_encrypted: (e.target as HTMLInputElement).checked })} />
+              <span>모든 OSD 기본 dm-crypt 암호화 (노드별 override 가능)</span>
             </label>
           </div>
-        </Field>
-
-        <div class="osd-defaults-head">OSD 기본값 (모든 OSD 노드에 적용)</div>
-
-        <div class="grid-3">
-          <Field label="OSD Data 디스크 크기 (GB)"
-                 hint="각 OSD VM에 할당될 데이터 디스크 크기. 디스크 개수 = 노드의 'Data devices' 항목 수. IDC 기본값 2 TB.">
-            <input type="number" min="10"
-                   value={$wizardStore.inventory.ceph.osd_data_disk_size_gb ?? 2048}
-                   oninput={(e) => updateCeph({ osd_data_disk_size_gb: +(e.target as HTMLInputElement).value || 0 })} />
-          </Field>
-          <Field label="OSD DB 디스크 크기 (GB)"
-                 hint="BlueStore DB 디스크 크기. Ceph 권장: data의 1-4%, 최소 30 GiB. 0 = data device에 함께 저장. IDC 기본 100 GB (2 TB data 기준).">
-            <input type="number" min="0"
-                   value={$wizardStore.inventory.ceph.osd_db_disk_size_gb ?? 100}
-                   oninput={(e) => updateCeph({ osd_db_disk_size_gb: +(e.target as HTMLInputElement).value || 0 })} />
-          </Field>
-          <Field label="OSD WAL 디스크 크기 (GB)"
-                 hint="별도 WAL 디스크 크기. 거의 안 씀 — 0 = WAL을 DB device에 자동 포함.">
-            <input type="number" min="0"
-                   value={$wizardStore.inventory.ceph.osd_wal_disk_size_gb ?? 0}
-                   oninput={(e) => updateCeph({ osd_wal_disk_size_gb: +(e.target as HTMLInputElement).value || 0 })} />
-          </Field>
-        </div>
-
-        <div class="grid-3">
-          <Field label="복제 수 (replica)"
-                 hint="RBD/CephFS 풀의 기본 replica. 3 = 표준 (host 2개 손실 OK), 2 = 랩 전용, 1 = 단일 노드만.">
-            <select value={String($wizardStore.inventory.ceph.replication ?? 3)}
-                    onchange={(e) => updateCeph({ replication: +(e.target as HTMLSelectElement).value })}>
-              <option value="3">3 (표준 — 권장)</option>
-              <option value="2">2 (랩 전용)</option>
-              <option value="1">1 (단일 노드)</option>
-              <option value="4">4 (고가용)</option>
-              <option value="5">5 (최고가용)</option>
-            </select>
-          </Field>
-          <Field label="Failure domain (CRUSH)"
-                 hint="복제본을 분산할 단위. 'host': 노드 단위(표준), 'rack'/'chassis': CRUSH 토폴로지 사전 설정 필요, 'osd': 비권장.">
-            <select value={$wizardStore.inventory.ceph.failure_domain ?? 'host'}
-                    onchange={(e) => updateCeph({ failure_domain: (e.target as HTMLSelectElement).value as 'host' | 'rack' | 'chassis' | 'osd' })}>
-              <option value="host">host (표준)</option>
-              <option value="rack">rack</option>
-              <option value="chassis">chassis</option>
-              <option value="osd">osd (비권장)</option>
-            </select>
-          </Field>
-          <Field label="기본 OSDs per device"
-                 hint="노드별 osds_per_device가 비어있을 때 사용. 일반 클러스터: 1.">
-            <input type="number" min="1" max="16"
-                   value={$wizardStore.inventory.ceph.default_osds_per_device ?? 1}
-                   oninput={(e) => updateCeph({ default_osds_per_device: +(e.target as HTMLInputElement).value || 1 })} />
-          </Field>
-        </div>
-        <label class="checkbox">
-          <input type="checkbox"
-                 checked={$wizardStore.inventory.ceph.default_encrypted ?? false}
-                 onchange={(e) => updateCeph({ default_encrypted: (e.target as HTMLInputElement).checked })} />
-          <span>모든 OSD 기본 dm-crypt 암호화 (노드별 override 가능)</span>
-        </label>
+        </details>
 
         {#if cephHints.length > 0 || datastoreHints.length > 0}
           <div class="ceph-hints">
@@ -1020,17 +1215,16 @@ content:
               <input value={node.ip}
                      oninput={(e) => updateNode(i, { ip: (e.target as HTMLInputElement).value })} />
             </Field>
-            <Field label={$_('step4.node.clusterIP')} hint={$_('step4.node.clusterIPHint')}>
+            <Field label={$_('step4.node.clusterIP')}
+                   hint={isCephCoreOnly(node.roles)
+                     ? $_('step4.node.clusterIPDisabledHint')
+                     : $_('step4.node.clusterIPHint')}>
               <input value={node.cluster_ip ?? ''}
+                     disabled={isCephCoreOnly(node.roles)}
                      oninput={(e) => updateNode(i, { cluster_ip: (e.target as HTMLInputElement).value || undefined })} />
             </Field>
-            <Field label="OS">
-              <select value={node.os}
-                      onchange={(e) => updateNode(i, { os: (e.target as HTMLSelectElement).value as NodeSpec['os'] })}>
-                <option value="microos">MicroOS</option>
-                <option value="leap">Leap 16</option>
-                <option value="tumbleweed">Tumbleweed</option>
-              </select>
+            <Field label="OS" hint={$_('step4.node.osReadOnlyHint')}>
+              <div class="readonly-os">{osLabel(node.os)}</div>
             </Field>
             <Field label="CPU">
               <input type="number" min="1" value={node.cpu}
@@ -1046,14 +1240,16 @@ content:
             </Field>
           </div>
           <div class="grid-2">
-            <Field label="설치 디스크 위치 ({datastoreOptions.length} 개 발견)"
+            <Field label="VM 디스크 데이터스토어 (필수, {datastoreOptions.length} 개 발견)"
                    hint={datastoreOptions.length > 0
-                     ? `Step 2 discovery로 가져온 ${datastoreOptions.length}개 datastore에서 선택. 모두 표시되지 않는다면 Step 2로 돌아가 "연결 + 리소스 가져오기"를 다시 눌러주세요.`
-                     : 'Step 2의 "연결 + 리소스 가져오기"를 누르면 드롭다운으로 채워집니다. 비워두면 클러스터 기본값 사용.'}>
+                     ? `이 노드의 root + extra 디스크가 떨어질 ESXi 데이터스토어. failure-domain 분산을 위해 OSD 노드들끼리 다른 데이터스토어로 분산 권장.`
+                     : 'Step 2의 "연결 + 리소스 가져오기"를 먼저 실행하면 드롭다운이 채워집니다.'}
+                   required>
               {#if datastoreOptions.length > 0}
                 <select value={node.datastore ?? ''}
-                        onchange={(e) => updateNode(i, { datastore: (e.target as HTMLSelectElement).value || undefined })}>
-                  <option value="">— 기본값({$wizardStore.inventory.target.datastore || '미지정'}) —</option>
+                        onchange={(e) => updateNode(i, { datastore: (e.target as HTMLSelectElement).value || undefined })}
+                        class:invalid={!node.datastore}>
+                  <option value="">— 데이터스토어 선택 —</option>
                   {#each datastoreOptions as ds}
                     <option value={ds.name}>{ds.name} ({ds.type ?? 'VMFS'}, {ds.free_gb ? ds.free_gb.toFixed(0) : '?'} / {ds.capacity_gb ? ds.capacity_gb.toFixed(0) : '?'} GB)</option>
                   {/each}
@@ -1061,7 +1257,8 @@ content:
               {:else}
                 <input value={node.datastore ?? ''}
                        oninput={(e) => updateNode(i, { datastore: (e.target as HTMLInputElement).value || undefined })}
-                       placeholder={'(blank → ' + ($wizardStore.inventory.target.datastore || 'cluster default') + ')'} />
+                       placeholder="ex: SSD-RAID0-4Ti-02"
+                       class:invalid={!node.datastore} />
               {/if}
             </Field>
 
@@ -1095,27 +1292,39 @@ content:
 
               <div class="grid-2">
                 <Field label="Data devices (OSD 데이터)"
-                       hint={`cephadm이 BlueStore OSD data로 사용할 블록 디바이스. 디바이스 개수만큼 ${$wizardStore.inventory.ceph.osd_data_disk_size_gb ?? 2048} GB 디스크가 VM에 할당됩니다 (Ceph 구성에서 변경).`}
+                       hint="cephadm이 BlueStore OSD data로 사용할 블록 디바이스. VM에 디바이스 개수만큼의 가상 디스크가 할당되며, 각 디스크 크기는 옆 칸에서 지정."
                        error={dataDevicesOf(node).length === 0 ? '최소 1개 필요 — cephadm bootstrap이 OSD를 만들지 못합니다' : ''}
                        required>
                   <input value={devicesText(dataDevicesOf(node))}
                          oninput={(e) => setDataDevices(i, (e.target as HTMLInputElement).value)}
                          placeholder="/dev/sdb, /dev/sdc" />
-                  {#if dataDevicesOf(node).length > 0}
-                    <span class="alloc-hint">→ {dataDevicesOf(node).length} disk × {$wizardStore.inventory.ceph.osd_data_disk_size_gb ?? 2048} GB</span>
-                  {/if}
                 </Field>
+                <Field label="Data 디스크 크기 (GB / 디스크)"
+                       hint={dataDevicesOf(node).length > 0
+                         ? `→ ${dataDevicesOf(node).length} × ${node.osd_data_size_gb ?? 64} GB = ${dataDevicesOf(node).length * (node.osd_data_size_gb ?? 64)} GB 합계`
+                         : '디바이스 개수와 곱해서 vmdk 할당'}>
+                  <input type="number" min="1"
+                         value={node.osd_data_size_gb ?? 64}
+                         oninput={(e) => updateNode(i, { osd_data_size_gb: +(e.target as HTMLInputElement).value || undefined })} />
+                </Field>
+              </div>
 
-                <Field label="DB/WAL devices (BlueStore 메타)"
+              <div class="grid-2">
+                <Field label="DB devices (BlueStore 메타, 선택)"
                        hint={(node.device_class ?? 'auto') === 'hdd'
-                         ? `⚡ HDD에 강력 권장 — 입력 시 ${$wizardStore.inventory.ceph.osd_db_disk_size_gb ?? 100} GB SSD가 디바이스 개수만큼 할당되어 throughput 4-8× 개선. 비워두면 data device에 함께 저장.`
-                         : `선택 — 입력 시 ${$wizardStore.inventory.ceph.osd_db_disk_size_gb ?? 100} GB 디스크가 디바이스 개수만큼 할당. 비워두면 data device에 함께 저장.`}>
+                         ? '⚡ HDD에 강력 권장 — 별도 SSD 입력 시 throughput 4-8× 개선. 비워두면 data device에 함께 저장.'
+                         : '선택 — 비워두면 data device에 함께 저장.'}>
                   <input value={devicesText(node.db_devices)}
                          oninput={(e) => setDBDevices(i, (e.target as HTMLInputElement).value)}
                          placeholder="/dev/sdc" />
-                  {#if (node.db_devices ?? []).length > 0}
-                    <span class="alloc-hint">→ {(node.db_devices ?? []).length} disk × {$wizardStore.inventory.ceph.osd_db_disk_size_gb ?? 100} GB</span>
-                  {/if}
+                </Field>
+                <Field label="DB 디스크 크기 (GB / 디스크)"
+                       hint={(node.db_devices ?? []).length > 0
+                         ? `→ ${(node.db_devices ?? []).length} × ${node.osd_db_size_gb ?? 16} GB`
+                         : 'DB devices가 비어있으면 미할당'}>
+                  <input type="number" min="0"
+                         value={node.osd_db_size_gb ?? 16}
+                         oninput={(e) => updateNode(i, { osd_db_size_gb: +(e.target as HTMLInputElement).value || undefined })} />
                 </Field>
               </div>
 
@@ -1159,6 +1368,12 @@ content:
                            oninput={(e) => updateNode(i, { wal_devices: parseDevices((e.target as HTMLInputElement).value).length > 0 ? parseDevices((e.target as HTMLInputElement).value) : undefined })}
                            placeholder="(empty)" />
                   </Field>
+                  <Field label="WAL 디스크 크기 (GB / 디스크)"
+                         hint="WAL devices가 비어있으면 무시됨.">
+                    <input type="number" min="0"
+                           value={node.osd_wal_size_gb ?? 0}
+                           oninput={(e) => updateNode(i, { osd_wal_size_gb: +(e.target as HTMLInputElement).value || undefined })} />
+                  </Field>
                 </div>
               {/if}
             </div>
@@ -1195,6 +1410,7 @@ content:
 </div>
 
 <StepNav canAdvance={canAdvance} />
+{/if}
 
 <style>
   .step-header { margin-bottom: 1.25rem; }
@@ -1206,6 +1422,42 @@ content:
 
   .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
   .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; }
+
+  /* Read-only OS display — looks like a disabled input so users see it as
+     informational rather than expecting it to be editable here. */
+  .readonly-os { padding: 0.45rem 0.65rem; border: 1px solid #2a2a30;
+                 border-radius: 4px; background: #16161a;
+                 color: #d4d4d8; font-size: 0.85rem;
+                 font-family: inherit; }
+
+  /* Required field that's currently empty — red border to signal "fix me". */
+  :global(input.invalid), :global(select.invalid) {
+    border-color: #b91c1c !important;
+    background: #1f0a0a;
+  }
+
+  /* Collapsible "deployment-time Ceph settings" — visually de-emphasised
+     because these belong to the Ceph operator's runtime, not the wizard's
+     OS provisioning step. Closed by default. */
+  details.cephadm-advanced { margin-top: 1rem;
+    border: 1px dashed #3f3f46; border-radius: 6px;
+    background: #0a0a0c; }
+  details.cephadm-advanced > summary {
+    list-style: none; cursor: pointer; padding: 0.7rem 0.85rem;
+    user-select: none; }
+  details.cephadm-advanced > summary::before {
+    content: '▶'; display: inline-block; margin-right: 0.5rem;
+    color: #71717a; font-size: 0.7rem; transition: transform 0.1s; }
+  details.cephadm-advanced[open] > summary::before { transform: rotate(90deg); }
+  details.cephadm-advanced .adv-title { font-weight: 600; color: #d4d4d8;
+    font-size: 0.9rem; }
+  details.cephadm-advanced .adv-sub { display: block; margin-top: 0.2rem;
+    margin-left: 1.4rem; font-size: 0.72rem; color: #71717a; line-height: 1.5; }
+  details.cephadm-advanced .adv-sub code {
+    background: #16161a; padding: 0.05rem 0.3rem; border-radius: 3px;
+    font-family: ui-monospace, monospace; color: #93c5fd; }
+  details.cephadm-advanced .adv-body { padding: 0.5rem 0.85rem 0.85rem;
+    border-top: 1px dashed #2a2a30; }
 
   .node-row { background: #0f0f12; border: 1px solid #2a2a30;
               border-radius: 6px; margin-bottom: 0.4rem;
@@ -1357,4 +1609,32 @@ content:
                        margin: 0.75rem 0 0.4rem; padding-top: 0.6rem;
                        border-top: 1px solid #2a2a30; }
   .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; }
+
+  /* dev-vm specific UI */
+  .ipmode-row { display: grid; grid-template-columns: 8rem 1fr 1fr; gap: 0.5rem;
+                align-items: stretch; margin: 0.6rem 0 0.4rem; }
+  .ipmode-label { color: #71717a; font-size: 0.78rem; text-transform: uppercase;
+                  letter-spacing: 0.05em; align-self: center; }
+  .ipmode-radio { display: grid; grid-template-rows: auto auto; gap: 0.15rem;
+                  padding: 0.5rem 0.7rem; background: #0f0f12;
+                  border: 1px solid #2a2a30; border-radius: 5px; cursor: pointer; }
+  .ipmode-radio:hover { border-color: #52525b; }
+  .ipmode-radio input { display: none; }
+  .ipmode-radio span { display: flex; align-items: center; gap: 0.4rem;
+                       font-size: 0.88rem; color: #e4e4e7; }
+  .ipmode-radio span::before { content: '○'; color: #71717a; font-size: 1rem; line-height: 1; }
+  .ipmode-radio:has(input:checked) { border-color: #3b82f6; background: #1e293b; }
+  .ipmode-radio:has(input:checked) span::before { content: '●'; color: #60a5fa; }
+  .ipmode-radio small { color: #71717a; font-size: 0.72rem; line-height: 1.4; padding-left: 1.4rem; }
+
+  .dhcp-note { background: #1e293b; border: 1px solid #1e3a8a; padding: 0.5rem 0.7rem;
+               border-radius: 5px; color: #cbd5e1; font-size: 0.82rem;
+               margin: 0.5rem 0; }
+
+  .input-error { border-color: #dc2626 !important;
+                 box-shadow: 0 0 0 1px #dc2626 inset; }
+  .input-warn { display: block; color: #fca5a5; font-size: 0.75rem;
+                margin-top: 0.25rem; line-height: 1.4; }
+  .input-warn code { background: #1f1010; color: #fca5a5; padding: 0.05rem 0.3rem;
+                     border-radius: 3px; font-family: ui-monospace, monospace; }
 </style>

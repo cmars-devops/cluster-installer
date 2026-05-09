@@ -5,13 +5,16 @@
   import StepNav from '../lib/ui/StepNav.svelte';
   import Badge from '../lib/ui/Badge.svelte';
   import { wizardStore } from '../stores/wizard';
-  import { api } from '../lib/api';
+  import { api, type VerifyCheck } from '../lib/api';
   import { onMount } from 'svelte';
 
+  // Stage list includes verify between wait_ssh and preflight. For
+  // cluster topologies the orchestrator emits stage-skipped on verify
+  // (it's dev-vm only) so the badge dims correctly.
   const stages = [
     'pending', 'seed_iso', 'datastore_upload',
     'terraform_init', 'terraform_plan', 'terraform_apply',
-    'wait_ssh', 'preflight', 'ceph', 'kubernetes', 'csi', 'addons',
+    'wait_ssh', 'verify', 'preflight', 'ceph', 'kubernetes', 'csi', 'addons',
     'completed'
   ] as const;
 
@@ -22,6 +25,10 @@
   let firewallHint = $state('');
   let starting = $state(false);
   let done = $state(false);
+  let verifyChecks = $state<VerifyCheck[]>([]);
+
+  const topology = $derived($wizardStore.inventory.cluster.topology);
+  const devVMMode = $derived(topology === 'dev-vm');
 
   onMount(() => {
     // Wails runtime injects window.runtime.EventsOn when running under the desktop app.
@@ -41,7 +48,14 @@
       skipped = { ...skipped, [s]: reason };
       lines = [...lines, `[skip] ${s} — ${reason}`];
     });
-    return () => { off1?.(); off2?.(); off3?.(); off4?.(); off5?.(); };
+    // Per-check verify result. Replaces the matching id row if it
+    // already exists so re-runs of redeploy show fresh data.
+    const off6 = r?.EventsOn?.('run:verify', (rec: VerifyCheck) => {
+      const idx = verifyChecks.findIndex((c) => c.id === rec.id);
+      if (idx >= 0) verifyChecks = verifyChecks.map((c, i) => i === idx ? rec : c);
+      else verifyChecks = [...verifyChecks, rec];
+    });
+    return () => { off1?.(); off2?.(); off3?.(); off4?.(); off5?.(); off6?.(); };
   });
 
   async function start() {
@@ -126,6 +140,26 @@
   {/if}
 </Section>
 
+{#if devVMMode && verifyChecks.length > 0}
+  <Section title={$_('step6.verifyTitle')} subtitle={$_('step6.verifySubtitle')}>
+    <ul class="verify-list">
+      {#each verifyChecks as v}
+        <li class="verify-row" class:fail={!v.pass}>
+          <span class="verify-mark">{v.pass ? '✓' : '✗'}</span>
+          <span class="verify-label">{v.label}</span>
+          <Badge tone={v.pass ? 'success' : 'danger'}>{v.pass ? 'PASS' : 'FAIL'}</Badge>
+          {#if v.detail}
+            <details class="verify-detail">
+              <summary>{$_('step6.verifyDetail')}</summary>
+              <pre>{v.detail}</pre>
+            </details>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+  </Section>
+{/if}
+
 <Section title={$_('step6.log')}>
   <pre class="log">{lines.length === 0 ? '(아직 로그 없음 / no logs yet)' : lines.join('\n')}</pre>
 </Section>
@@ -148,4 +182,24 @@
          border-radius: 5px; font-family: ui-monospace, monospace; font-size: 0.78rem;
          max-height: 50vh; overflow: auto; color: #d4d4d8; margin: 0; line-height: 1.5;
          white-space: pre-wrap; }
+  .verify-list { list-style: none; padding: 0; margin: 0; display: flex;
+                 flex-direction: column; gap: 0.4rem; }
+  .verify-row { display: grid; grid-template-columns: 1.4rem 1fr auto auto;
+                gap: 0.5rem; align-items: center; padding: 0.5rem 0.7rem;
+                background: #0a0a0c; border: 1px solid #1e3a8a; border-radius: 5px; }
+  .verify-row.fail { border-color: #7f1d1d; }
+  .verify-mark { font-size: 1rem; color: #34d399; line-height: 1; text-align: center; }
+  .verify-row.fail .verify-mark { color: #f87171; }
+  .verify-label { font-size: 0.85rem; color: #e4e4e7; }
+  .verify-detail { grid-column: 1 / -1; margin-top: 0.3rem; }
+  .verify-detail summary { color: #93c5fd; font-size: 0.78rem; cursor: pointer;
+                            list-style: none; padding: 0.2rem 0; }
+  .verify-detail summary::-webkit-details-marker { display: none; }
+  .verify-detail summary::before { content: '▶ '; }
+  .verify-detail[open] summary::before { content: '▼ '; }
+  .verify-detail pre { margin: 0.3rem 0 0; padding: 0.5rem 0.7rem; background: #0f0f12;
+                       border: 1px solid #2a2a30; border-radius: 4px;
+                       font-family: ui-monospace, monospace; font-size: 0.75rem;
+                       color: #d4d4d8; white-space: pre-wrap; max-height: 12rem;
+                       overflow: auto; }
 </style>

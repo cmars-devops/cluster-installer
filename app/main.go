@@ -20,9 +20,9 @@ func main() {
 
 	err := wails.Run(&options.App{
 		Title:     "Cluster Installer",
-		Width:     1280,
+		Width:     1920,
 		Height:    820,
-		MinWidth:  1024,
+		MinWidth:  1536,
 		MinHeight: 720,
 		AssetServer: &assetserver.Options{
 			Assets: assets,

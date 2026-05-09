@@ -3,6 +3,11 @@ app/build/bin/
 app/frontend/dist/
 app/frontend/node_modules/
 app/frontend/wailsjs/
+app/frontend/package.json.md5
+# Embedded binaries (terraform.exe + uv.exe) are dropped under
+# app/embedded/bin/ on first build. The *.exe rule below also covers
+# them; listing the dir keeps `git status` quieter on a clean checkout.
+app/embedded/bin/
 app/internal/embedded/bin/
 
 # Go
@@ -17,6 +22,8 @@ vendor/
 *.swp
 .DS_Store
 Thumbs.db
+# Claude Code worktree metadata — never commit
+.claude/
 
 # Local install / state
 .go-install.log

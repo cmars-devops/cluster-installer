@@ -19,6 +19,38 @@ export type Status = {
 
 export type ValidationResult = { valid: boolean; errors: string[] };
 
+// VerifyCheck mirrors internal/state.VerifyCheck (run.json schema). One
+// row per probe in the dev-vm verify stage; rendered in Step 6/7 as a
+// PASS/FAIL checklist.
+export type VerifyCheck = {
+  id: string;        // ssh_os_release | hostname_ip_mac | network_dns | package_manager
+  label: string;
+  pass: boolean;
+  detail?: string;
+};
+
+// Run is the lightweight subset Step 6/7 consumes from GetRun.
+export type Run = {
+  id: string;
+  stage: string;
+  last_error?: string;
+  verify_results?: VerifyCheck[];
+  inventory?: any;
+};
+
+// LeftoverISOs is the response from ListLeftoverISOs — what's still
+// sitting under cluster-installer/ on the ISO datastore.
+export type LeftoverFile = { name: string; size: number };
+// owned=true → run-id matches one of OUR local runs (safe to wipe).
+// owned=false → unknown owner (parallel installer? other tool?) — left alone.
+export type LeftoverEntry = { path: string; owned: boolean; files: LeftoverFile[]; error?: string };
+export type LeftoverISOs = {
+  datastore: string;
+  entries: LeftoverEntry[];
+  total_gb: number;
+  error?: string;
+};
+
 // Result of probing an ESXi host (or vCenter) and listing the resources
 // the operator will pick from. Returned by App.DiscoverESXi(target).
 export type ESXiDiscovery = {
@@ -92,6 +124,18 @@ export const api = {
   },
   listRuns(): Promise<unknown[]> {
     return call<unknown[]>('ListRuns', [], []);
+  },
+  getRun(id: string): Promise<Run> {
+    return call<Run>('GetRun', [id], { id, stage: 'pending' });
+  },
+  redeployDevVM(id: string): Promise<void> {
+    return call<void>('RedeployDevVM', [id], undefined);
+  },
+  listLeftoverISOs(target: unknown): Promise<LeftoverISOs> {
+    return call<LeftoverISOs>('ListLeftoverISOs', [target], { datastore: '', entries: [], total_gb: 0 });
+  },
+  wipeLeftoverISOs(target: unknown): Promise<void> {
+    return call<void>('WipeLeftoverISOs', [target], undefined);
   },
 
   // Probe an ESXi/vCenter endpoint with the given target spec, return

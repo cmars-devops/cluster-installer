@@ -30,7 +30,16 @@
   },
   "step1": {
     "modeNew": "New cluster",
-    "modeNewDesc": "Start from a blank inventory",
+    "modeNewDesc": "Start from a blank inventory (Ceph / K8s / combined)",
+    "modeNewVM": "New VM",
+    "modeNewVMDesc": "Single-VM unattended install verification — ESXi + Ubuntu. The cluster's smallest unit.",
+    "devVMTitle": "Single VM unattended install",
+    "devVMSubtitle": "Build one VM and verify the OS install end-to-end — the foundation cluster-mode OS install relies on.",
+    "devVMHypervisor": "Hypervisor",
+    "devVMOS": "OS",
+    "devVMSeed": "Seed mechanism",
+    "devVMVerify": "Auto verify",
+    "devVMNote": "Next steps: enter ESXi credentials, pick Ubuntu version, then hostname/IP/SSH keys.",
     "modeResume": "Resume a run",
     "modeResumeDesc": "In-progress runs persisted in %LOCALAPPDATA%\\cluster-installer\\runs",
     "topology": "What kind of cluster?",
@@ -73,8 +82,8 @@
     "rootPasswordHint": "ESXi uses a single root password for both vSphere SOAP and SSH. Stored in %LOCALAPPDATA%\\cluster-installer\\runs\\<id>\\run.json — do not export.",
     "datastore": "Datastore",
     "datastoreHint": "Name of an ESXi storage location — VM virtual disks (.vmdk) and seed ISOs go there. e.g. datastore1, SSD-RAID0-4Ti-02",
-    "isoDatastore": "ISO-upload datastore",
-    "isoDatastoreHint": "Optional separate location for ISO files. Leave blank to reuse the datastore above.",
+    "isoDatastore": "Datastore (for ISO uploads)",
+    "isoDatastoreHint": "Where install/seed ISOs are uploaded. VM virtual disks are picked per-node in Step 4 — that separation makes the \"small datastore catches every OSD disk\" footgun structurally impossible.",
     "network": "Port group",
     "networkHint": "VM-facing port group on the ESXi vSwitch. ESXi default: 'VM Network'.",
     "datastoreHelpTitle": "How do I find my datastore / port group names?",
@@ -112,8 +121,16 @@
       "leap": "openSUSE Leap 16",
       "leapDesc": "Stable LTS, immediate zypper installs. Recommended for Ceph OSD/MON nodes that need package flexibility.",
       "tumbleweed": "openSUSE Tumbleweed",
-      "tumbleweedDesc": "Rolling release, latest kernel/packages. Dev/experimentation."
-    }
+      "tumbleweedDesc": "Rolling release, latest kernel/packages. Dev/experimentation.",
+      "ubuntu": "Ubuntu 26.04 LTS",
+      "ubuntuDesc": "Canonical LTS Server. Subiquity autoinstall (cloud-init NoCloud) for unattended install. Officially supported by Ceph cephadm, RKE2, and K3s. apt + AppArmor environment.",
+      "ubuntu26Desc": "Primary automation target. cloud-init + subiquity autoinstall, full apt ecosystem, vmxnet3 (ens192) out of the box.",
+      "ubuntu24Desc": "Regression safety net. If 26.04 subiquity schema breaks autoinstall, 24.04 is the fastest comparison."
+    },
+    "devVMHint": "Build one independent VM with unattended OS install. Just pick the OS.",
+    "devVMSectionTitle": "OS to install",
+    "devVMOnlyUbuntuNote": "v1: Ubuntu LTS only. Other distros (Leap, RHEL family, etc.) extend the same flow once added to the catalog — coming later.",
+    "recommended": "recommended"
   },
   "step4": {
     "cluster": "Cluster metadata",
@@ -142,6 +159,8 @@
       "ip": "IP",
       "clusterIP": "Cluster IP",
       "clusterIPHint": "Ceph OSD backend network IP (optional)",
+      "clusterIPDisabledHint": "This node has no OSD role; cluster network IP is not used.",
+      "osReadOnlyHint": "Auto-set from Step 3 (per role: K8s vs Ceph). To change, go back to Step 3.",
       "os": "OS",
       "roles": "Roles",
       "cpu": "CPU",
@@ -162,7 +181,31 @@
     "preview": "YAML preview",
     "validation": "Validation",
     "validationOk": "✓ Inventory matches schema",
-    "validationErr": "Validation failed"
+    "validationErr": "Validation failed",
+    "devVMSubtitle": "Build one independent VM and verify the unattended OS install end-to-end. Cluster, CIDR, role settings are not used.",
+    "devVMSection": "VM spec",
+    "devVMSectionHint": "Hostname, IP, and resource sizing — that's all. SSH keys come from what you entered on Step 1.",
+    "devVM": {
+      "prefixLen": "Subnet prefix length",
+      "ipMode": "IP mode",
+      "ipModeStatic": "Static IP",
+      "ipModeStaticHint": "Install with the IP/gateway you specify. Most common.",
+      "ipModeDHCPHint": "DHCP server assigns at boot. No IP/gateway input needed.",
+      "ipDHCPHint": "(optional) for SSH during verify — fill in if you have a DHCP reservation",
+      "dhcpNote": "DHCP mode: static IP / gateway inputs are ignored. autoinstall sets the NIC to dhcp4: true. The verify stage needs a known IP to SSH into; provide one only if you have a DHCP reservation.",
+      "datastore": "VM disk datastore",
+      "datastoreHint": "ESXi datastore that hosts the VM's virtual disks. Click 'Discover resources' on Step 2 to populate the dropdown.",
+      "datastorePicker": "Pick a datastore",
+      "diskProvisioning": "Disk provisioning",
+      "diskProvisioningHint": "thin: allocate as used (default). thick: pre-allocate. thick-eager: pre-allocate + zero (most consistent I/O).",
+      "hostname": "Hostname (inside the OS)",
+      "hostnameHint": "Goes into /etc/hostname, the shell prompt, the SSH host-key identifier, etc.",
+      "displayName": "VM name (vSphere label, optional)",
+      "displayNameHint": "Label shown in the vSphere inventory tree. Empty = reuse the hostname above. Set this when you want different values inside vs outside the VM.",
+      "invalidIPv4": "Not a valid IPv4 address",
+      "nameserverHint": "Each entry must be a dotted-quad IP (e.g. 10.10.1.3 — a typo like '10.10.13' with a missing octet is rejected by netplan apply)",
+      "note": "This mode ignores cluster.kubernetes / network.vip / lb_pool / Ceph entirely — only the single-VM unattended install runs."
+    }
   },
   "step5": {
     "summary": "About to create",
@@ -190,6 +233,7 @@
       "terraform_plan": "Terraform plan",
       "terraform_apply": "VM create + OS install",
       "wait_ssh": "SSH health wait",
+      "verify": "Install verify",
       "preflight": "Node preflight",
       "ceph": "Ceph bootstrap",
       "kubernetes": "Kubernetes install",
@@ -197,7 +241,10 @@
       "addons": "Day-2 add-ons",
       "completed": "completed",
       "failed": "failed"
-    }
+    },
+    "verifyTitle": "Install verification",
+    "verifySubtitle": "SSH into the VM and run four sanity checks.",
+    "verifyDetail": "details"
   },
   "step7": {
     "kubeconfig": "kubeconfig",
@@ -216,7 +263,21 @@
       "Run kubectl get nodes",
       "Run ceph -s on a mon node to verify storage health",
       "Push a first Argo CD Application if you opted into GitOps"
-    ]
+    ],
+    "devVMSubtitle": "Single-VM result + verify summary + redeploy",
+    "devVMSummary": "VM summary",
+    "devVMHostname": "Hostname",
+    "devVMIP": "IP",
+    "devVMOS": "OS",
+    "devVMResources": "Resources",
+    "devVMSSH": "SSH",
+    "devVMVerify": "Unattended-install verification",
+    "devVMVerifyHint": "PASS/FAIL record from the most recent verify stage.",
+    "devVMRedeploy": "Redeploy",
+    "devVMRedeployHint": "Re-create the same VM with the same inventory (re-run terraform apply). MAC and IP are kept stable.",
+    "devVMRedeployBtn": "Redeploy now",
+    "devVMRedeployNote": "v1: delete the VM in vSphere first, then redeploy. Full destroy+apply automation is planned for the next release.",
+    "verifyDetail": "details"
   },
   "lang": {
     "label": "Language",

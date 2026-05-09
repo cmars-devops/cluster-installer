@@ -206,6 +206,13 @@
              onchange={(e) => updateTarget({ tls_insecure: checked(e) })} />
       <span>{$_('step2.tlsInsecureEsxi')}</span>
     </label>
+    {#if !target.tls_insecure}
+      <div class="tls-warn">
+        ⚠ TLS 검증이 켜져 있습니다. ESXi는 보통 자체서명 인증서를 사용하므로
+        Discover/배포 시 <code>x509: certificate signed by unknown authority</code> 오류가 납니다.
+        랩/IDC 환경이면 체크하는 것이 정상입니다.
+      </div>
+    {/if}
 
     <div class="row">
       <Button variant="primary"
@@ -260,10 +267,16 @@
       </details>
     {/if}
 
-    <Field label={$_('step2.datastore')} hint={discovery?.ok ? '' : $_('step2.datastoreHint')} required>
+    <!--
+      Step 2 picks ONLY where ISO uploads land. VM disk placement is
+      per-node in Step 4 — that way the "small datastore catches every
+      OSD" footgun is structurally impossible, and per-node failure-domain
+      distribution is explicit.
+    -->
+    <Field label={$_('step2.isoDatastore')} hint={$_('step2.isoDatastoreHint')} required>
       {#if discovery?.ok && discovery.datastores && !manualDS}
-        <select value={target.datastore}
-                onchange={(e) => updateTarget({ datastore: val(e) })}>
+        <select value={target.iso_datastore}
+                onchange={(e) => updateTarget({ iso_datastore: val(e) })}>
           <option value="">— {$_('step2.datastorePicker')} —</option>
           {#each discovery.datastores.filter(d => d.accessible) as ds}
             <option value={ds.name}>
@@ -273,28 +286,12 @@
         </select>
         <button class="link" onclick={() => (manualDS = true)} type="button">{$_('step2.manualEntry')}</button>
       {:else}
-        <input value={target.datastore}
-               oninput={(e) => updateTarget({ datastore: val(e) })}
-               placeholder="SSD-RAID0-4Ti-02" />
+        <input value={target.iso_datastore}
+               oninput={(e) => updateTarget({ iso_datastore: val(e) })}
+               placeholder="SSD-RAID0-2Ti-01" />
         {#if discovery?.ok}
           <button class="link" onclick={() => (manualDS = false)} type="button">← back to picker</button>
         {/if}
-      {/if}
-    </Field>
-
-    <Field label={$_('step2.isoDatastore')} hint={$_('step2.isoDatastoreHint')}>
-      {#if discovery?.ok && discovery.datastores}
-        <select value={target.iso_datastore}
-                onchange={(e) => updateTarget({ iso_datastore: val(e) })}>
-          <option value="">(blank → same as above)</option>
-          {#each discovery.datastores.filter(d => d.accessible) as ds}
-            <option value={ds.name}>{ds.name}  ({ds.free_gb.toFixed(0)} GB free)</option>
-          {/each}
-        </select>
-      {:else}
-        <input value={target.iso_datastore}
-               oninput={(e) => updateTarget({ iso_datastore: val(e) })}
-               placeholder="(blank → same as above)" />
       {/if}
     </Field>
 
@@ -359,6 +356,11 @@
 
   .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
   .row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+  .tls-warn { margin: 0.4rem 0 0; padding: 0.5rem 0.7rem; border-radius: 5px;
+              background: #2a1c0a; border: 1px solid #b45309; color: #fcd34d;
+              font-size: 0.78rem; line-height: 1.5; }
+  .tls-warn code { background: #1a1a1f; padding: 0.05rem 0.3rem; border-radius: 3px;
+                   font-family: ui-monospace, monospace; }
   .checkbox { display: flex; gap: 0.5rem; align-items: center; font-size: 0.85rem;
               color: #d4d4d8; cursor: pointer; }
   .checkbox input { accent-color: #3b82f6; }

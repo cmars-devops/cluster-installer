@@ -132,6 +132,15 @@ func (o *Orchestrator) writeLibvirtTFVars(path string) error {
 					"inst.install_url=%s inst.auto=%s",
 				squashURL, installURL, profileURL,
 			)
+		case "ubuntu":
+			// Ubuntu live-server boots from a remastered ISO attached as a
+			// CD-ROM. The remastered ISO has the autoinstall cmdline baked
+			// into grub.cfg, so libvirt just needs to attach it; no direct
+			// kernel boot, no base volume (Subiquity formats the disk fresh).
+			// Reuse SeedISOPath as the boot CD-ROM since Ubuntu does not need
+			// a separate seed ISO (autoinstall data is served over HTTP).
+			nv.BootMode = "iso"
+			nv.SeedISOPath = filepath.Join(o.stagingDir, "iso", "install-"+n.Hostname+".iso")
 		default:
 			return fmt.Errorf("node %s: unsupported os %q", n.Hostname, n.OS)
 		}
@@ -205,27 +214,68 @@ func (o *Orchestrator) writeProxmoxTFVars(path string) error {
 // upstream with a clear error rather than producing a tfvars.json that
 // would silently boot Leap into the standard installer's manual flow.
 func (o *Orchestrator) writeESXiTFVars(path string) error {
+	// Resolve ISO datastore: explicit Step 2 value > Target.Datastore (Step 2
+	// fallback) > dev-vm node datastore (single-VM convenience). Cluster mode
+	// will still require an explicit Step 2 entry because that scales.
+	if o.Inventory.Target.ISODatastore == "" {
+		if o.Inventory.Target.Datastore != "" {
+			o.Inventory.Target.ISODatastore = o.Inventory.Target.Datastore
+		} else if o.Inventory.Cluster.IsDevVM() && len(o.Inventory.Nodes) > 0 && o.Inventory.Nodes[0].Datastore != "" {
+			o.Inventory.Target.ISODatastore = o.Inventory.Nodes[0].Datastore
+		} else {
+			return fmt.Errorf("ISO upload datastore is required (Step 4 → \"VM 디스크 데이터스토어\" or Step 2)")
+		}
+	}
 	dsRunRoot := esxiDatastoreRunRoot(o.Run.ID)
+	devVM := o.Inventory.Cluster.IsDevVM()
 	nodes := make([]esxiNodeVar, 0, len(o.Inventory.Nodes))
 	for _, n := range o.Inventory.Nodes {
+		// Per-node datastore. Cluster mode REQUIRES it (no silent
+		// cluster-level fallback — that used to cause space-exhaustion
+		// when every OSD landed on the smallest array). dev-vm mode
+		// falls back to target.datastore (Step 4 → datastore picker, OR
+		// Step 2 ESXi defaults), since picking once is reasonable for a
+		// single-VM run.
+		ds := n.Datastore
+		if ds == "" && devVM {
+			ds = o.Inventory.Target.Datastore
+		}
+		if ds == "" {
+			return fmt.Errorf("node %q: datastore is required (Step 4 → \"VM 디스크 데이터스토어\")", n.Hostname)
+		}
+		// vSphere displays Name in its inventory tree. When the operator
+		// set a separate display_name, use that — otherwise the OS
+		// hostname doubles as the vSphere label (most common case).
+		vmName := n.DisplayName
+		if vmName == "" {
+			vmName = n.Hostname
+		}
 		nv := esxiNodeVar{
-			Name:             n.Hostname,
+			Name:             vmName,
 			MemoryMB:         defaultInt(n.MemoryGB*1024, 4096),
 			VCPU:             defaultInt(n.CPU, 2),
 			DiskGB:           defaultInt(n.DiskGB, 40),
 			ExtraDisksGB:     extraDisksFor(n, o.Inventory.Ceph),
-			SeedISOPath:      dsRunRoot + "seed-" + n.Hostname + ".iso",
 			MAC:              n.PrimaryMAC,
-			Datastore:        n.Datastore, // per-node placement override
+			Datastore:        ds,
 			DiskProvisioning: defaultStr(n.DiskProvisioning, "thin"),
 			GuestID:          esxiGuestIDFor(n.OS),
 		}
-		// Leap/Tumbleweed: the orchestrator's pre-TF stage rebuilds the
-		// netinstall ISO per node with our cmdline. MicroOS skips this —
-		// the qcow2-derived install path doesn't apply (no live netinstall
-		// concept; Combustion via the seed CD is sufficient).
-		if n.OS == "leap" || n.OS == "tumbleweed" {
+		// Per-node seed CD-ROM. Always present:
+		//   MicroOS  → Combustion+Ignition (the install payload itself)
+		//   Agama    → secondary CD with first-boot script + SSH keys
+		//   Ubuntu   → cidata CD with user-data + meta-data (NoCloud)
+		nv.SeedISOPath = dsRunRoot + "seed-" + n.Hostname + ".iso"
+
+		// Install ISO:
+		//   Leap/Tumbleweed → per-node remaster (URL has hostname, no choice)
+		//   Ubuntu          → SHARED across all Ubuntu nodes (one upload).
+		//                     Identity comes from the cidata CD above.
+		switch n.OS {
+		case "leap", "tumbleweed":
 			nv.InstallISOPath = dsRunRoot + "install-" + n.Hostname + ".iso"
+		case "ubuntu":
+			nv.InstallISOPath = dsRunRoot + "install-ubuntu.iso"
 		}
 		nodes = append(nodes, nv)
 	}
@@ -235,10 +285,11 @@ func (o *Orchestrator) writeESXiTFVars(path string) error {
 		"vsphere_user":     defaultStr(o.Inventory.Target.Username, "root"),
 		"vsphere_password": o.Inventory.Target.Password,
 		"tls_insecure":     o.Inventory.Target.TLSInsecure,
-		"datastore":        o.Inventory.Target.Datastore,
-		"iso_datastore":    defaultStr(o.Inventory.Target.ISODatastore, o.Inventory.Target.Datastore),
-		"network":          defaultStr(o.Inventory.Target.Network, "VM Network"),
-		"nodes":            nodes,
+		// iso_datastore is the only Step 2-level storage choice. VM disk
+		// placement is per-node (each.value.datastore in the stack).
+		"iso_datastore": o.Inventory.Target.ISODatastore,
+		"network":       defaultStr(o.Inventory.Target.Network, "VM Network"),
+		"nodes":         nodes,
 	}
 	return writeJSON(path, doc)
 }
@@ -258,6 +309,8 @@ func esxiGuestIDFor(os string) string {
 	switch os {
 	case "microos", "leap", "tumbleweed":
 		return "opensuse64Guest"
+	case "ubuntu":
+		return "ubuntu64Guest"
 	default:
 		return "otherLinux64Guest"
 	}
@@ -315,16 +368,19 @@ func proxmoxFormatFor(p string) (format string, discard bool) {
 
 // extraDisksFor returns per-node additional virtual disk sizes (GB) the
 // Terraform stack should provision. COUNT comes from the OSD device path
-// lists on the node; SIZE comes from cluster-level Ceph defaults. Order:
-// data disks first, then DB, then WAL.
+// lists on the node; SIZE comes from per-node fields (osd_data_size_gb /
+// osd_db_size_gb / osd_wal_size_gb). The cluster-level CephSpec.OSD*GB
+// fields are accepted only as a legacy fallback for inventories saved
+// before per-node sizing landed. Order: data disks first, then DB, then
+// WAL.
 //
-// Example with cluster defaults data=2048, db=100, wal=0 and a node with
-// data_devices=[/dev/sdb,/dev/sdc], db_devices=[/dev/sdd]:
-//   → 3 extra disks: [2048, 2048, 100]
+// Example: a node with data_devices=[/dev/sdb,/dev/sdc] osd_data_size_gb=64,
+// db_devices=[/dev/sdd] osd_db_size_gb=16:
+//   → 3 extra disks: [64, 64, 16]
 //
 // Backward compat: if data/db/wal lists are empty but legacy
 // storage_devices is set, treat the first entry as data and the rest
-// as DB devices, sized from cluster defaults.
+// as DB devices.
 func extraDisksFor(n inventory.NodeSpec, c inventory.CephSpec) []int {
 	if !n.HasRole("ceph-osd") {
 		return []int{}
@@ -341,15 +397,19 @@ func extraDisksFor(n inventory.NodeSpec, c inventory.CephSpec) []int {
 		}
 	}
 
-	dataSize := c.OSDDataDiskSizeGB
-	if dataSize == 0 {
-		dataSize = 2048
+	pick := func(perNode, legacy, fallback int) int {
+		switch {
+		case perNode > 0:
+			return perNode
+		case legacy > 0:
+			return legacy
+		default:
+			return fallback
+		}
 	}
-	dbSize := c.OSDDBDiskSizeGB
-	if dbSize == 0 {
-		dbSize = 100
-	}
-	walSize := c.OSDWALDiskSizeGB
+	dataSize := pick(n.OSDDataSizeGB, c.OSDDataDiskSizeGB, 64)
+	dbSize := pick(n.OSDDBSizeGB, c.OSDDBDiskSizeGB, 16)
+	walSize := pick(n.OSDWALSizeGB, c.OSDWALDiskSizeGB, 0)
 
 	out := make([]int, 0, len(dataPaths)+len(dbPaths)+len(walPaths))
 	for range dataPaths {

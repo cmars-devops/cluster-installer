@@ -29,10 +29,13 @@ type Context struct {
 }
 
 type ClusterContext struct {
-	Name         string
-	Domain       string
-	Timezone     string
-	HostsEntries []string // e.g. "10.10.1.31  k3s-server-01"
+	Name            string
+	Domain          string
+	Timezone        string
+	Username        string   // sudo account autoinstall creates (default "triangles")
+	HostsEntries    []string // e.g. "10.10.1.31  k3s-server-01"
+	NodePassword    string   // cluster-wide node password (plain — applied via late-commands chpasswd)
+	SSHImportGitHub []string // GitHub usernames; ssh-import-id-gh fetches keys at first boot
 }
 
 type NetworkContext struct {
@@ -103,10 +106,13 @@ func BuildContext(inv inventory.Inventory, node inventory.NodeSpec, rootPwHash s
 	}
 	return Context{
 		Cluster: ClusterContext{
-			Name:         inv.Cluster.Name,
-			Domain:       inv.Cluster.Domain,
-			Timezone:     tz,
-			HostsEntries: hostsEntries,
+			Name:            inv.Cluster.Name,
+			Domain:          inv.Cluster.Domain,
+			Timezone:        tz,
+			Username:        inv.ClusterAuth.SudoUser(),
+			HostsEntries:    hostsEntries,
+			NodePassword:    inv.ClusterAuth.NodePassword,
+			SSHImportGitHub: inv.ClusterAuth.SSHImportGitHub,
 		},
 		Network: NetworkContext{
 			PodCIDR:          inv.Network.PodCIDR,
@@ -117,12 +123,14 @@ func BuildContext(inv inventory.Inventory, node inventory.NodeSpec, rootPwHash s
 			ClusterPrefixLen: clusterPrefix,
 		},
 		Node: NodeContext{
-			Hostname:          node.Hostname,
-			IP:                node.IP,
-			ClusterIP:         node.ClusterIP,
-			NetworkInterface:  iface,
-			PrimaryMAC:        node.PrimaryMAC,
-			SSHAuthorizedKeys: node.SSHAuthKeys,
+			Hostname:         node.Hostname,
+			IP:               node.IP,
+			ClusterIP:        node.ClusterIP,
+			NetworkInterface: iface,
+			PrimaryMAC:       node.PrimaryMAC,
+			// Per-node keys win; otherwise the cluster-wide list from
+			// Step 1 ("노드 인증 자격 증명") fills in.
+			SSHAuthorizedKeys: firstNonEmpty(node.SSHAuthKeys, inv.ClusterAuth.SSHAuthorizedKeys),
 			RootPasswordHash:  rootPwHash,
 			Roles:             node.Roles,
 			OS:                node.OS,
@@ -132,6 +140,13 @@ func BuildContext(inv inventory.Inventory, node inventory.NodeSpec, rootPwHash s
 			NeedsK3sSELinux:   node.NeedsK3sSELinux(),
 		},
 	}
+}
+
+func firstNonEmpty(a, b []string) []string {
+	if len(a) > 0 {
+		return a
+	}
+	return b
 }
 
 // HostsEntriesFromInventory generates the cluster-wide /etc/hosts block

@@ -3,23 +3,75 @@ package inventory
 // Inventory mirrors content/schema/inventory.schema.json. Keep these in sync;
 // the validator is the source of truth.
 type Inventory struct {
-	Cluster ClusterSpec   `yaml:"cluster" json:"cluster"`
-	Network NetworkSpec   `yaml:"network" json:"network"`
-	Target  TargetSpec    `yaml:"target"  json:"target"`
-	Nodes   []NodeSpec    `yaml:"nodes"   json:"nodes"`
-	Ceph    CephSpec      `yaml:"ceph"    json:"ceph"`
-	Addons  AddonsSpec    `yaml:"addons"  json:"addons"`
-	Content ContentSpec   `yaml:"content" json:"content"`
+	Cluster     ClusterSpec     `yaml:"cluster" json:"cluster"`
+	Network     NetworkSpec     `yaml:"network" json:"network"`
+	Target      TargetSpec      `yaml:"target"  json:"target"`
+	Nodes       []NodeSpec      `yaml:"nodes"   json:"nodes"`
+	Ceph        CephSpec        `yaml:"ceph"    json:"ceph"`
+	Addons      AddonsSpec      `yaml:"addons"  json:"addons"`
+	Content     ContentSpec     `yaml:"content" json:"content"`
+	ClusterAuth ClusterAuthSpec `yaml:"cluster_auth,omitempty" json:"cluster_auth,omitempty"`
+}
+
+// ClusterAuthSpec carries cluster-wide credentials baked into autoinstall
+// user-data (so freshly-installed nodes are reachable via SSH without
+// further intervention). Per-node NodeSpec.SSHAuthKeys override
+// SSHAuthorizedKeys when set; SSHImportGitHub is always cluster-wide.
+type ClusterAuthSpec struct {
+	// Username is the sudo account autoinstall creates on every node.
+	// SSH keys, the optional console password, and the sudoers NOPASSWD
+	// entry all attach to THIS account. The wizard defaults to
+	// "triangles" for back-compat with the original cluster flow; an
+	// operator-friendly value is whatever they're used to ("ubuntu",
+	// "admin", their own login name, etc.). Empty = use default.
+	Username          string   `yaml:"username,omitempty"             json:"username,omitempty"`
+	// GitHub usernames whose keys are fetched from github.com/<name>.keys
+	// at first boot via ssh-import-id-gh. Lower friction than pasting raw
+	// keys and stays current as the operator rotates their GitHub keys.
+	SSHImportGitHub   []string `yaml:"ssh_import_github,omitempty"    json:"ssh_import_github,omitempty"`
+	// Raw SSH public keys (ssh-ed25519 / ssh-rsa lines). Optional fallback
+	// when GitHub-import isn't available (offline lab, internal-only nodes).
+	SSHAuthorizedKeys []string `yaml:"ssh_authorized_keys,omitempty" json:"ssh_authorized_keys,omitempty"`
+	// NodePassword is plain-text — applied to NodeSpec.OS users via
+	// chpasswd in late-commands (subiquity's identity.password requires
+	// SHA-512 crypt which the wizard doesn't currently produce native-Go).
+	// Used for console / sudo prompts only; SSH still goes through keys.
+	NodePassword      string   `yaml:"node_password,omitempty"        json:"node_password,omitempty"`
+}
+
+// SudoUser returns the configured sudo account name, falling back to
+// the historical default "triangles" when the operator hasn't picked
+// one. Centralised so every consumer (template substitution, SSH
+// dial-in, verify, hosts.yml) agrees on one value.
+func (a ClusterAuthSpec) SudoUser() string {
+	if a.Username != "" {
+		return a.Username
+	}
+	return "triangles"
 }
 
 type ClusterSpec struct {
-	Name         string            `yaml:"name" json:"name"`
-	Domain       string            `yaml:"domain" json:"domain"`
-	Timezone     string            `yaml:"timezone,omitempty" json:"timezone,omitempty"`
-	Topology     string            `yaml:"topology,omitempty" json:"topology,omitempty"` // ceph-only | k8s-only | combined
+	Name     string `yaml:"name" json:"name"`
+	Domain   string `yaml:"domain" json:"domain"`
+	Timezone string `yaml:"timezone,omitempty" json:"timezone,omitempty"`
+	// Topology controls which pipeline stages run.
+	//   ceph-only | k8s-only | combined → cluster pipelines (multi-node)
+	//   dev-vm                          → single-VM unattended-install verification harness
+	Topology     string            `yaml:"topology,omitempty" json:"topology,omitempty"`
 	Kubernetes   K8sSpec           `yaml:"kubernetes" json:"kubernetes"`
 	ExternalCeph *ExternalCephSpec `yaml:"external_ceph,omitempty" json:"external_ceph,omitempty"`
 }
+
+// TopologyDevVM is the topology value reserved for the single-VM
+// unattended-install verification mode. The orchestrator skips every
+// cluster-level stage (preflight, ceph, k8s, csi, addons) and runs a
+// dedicated verify stage at the end. Used by the wizard's "신규 VM 생성
+// (Dev VM)" flow and as a smoke-test harness for the OS-install plumbing
+// that the cluster pipeline depends on.
+const TopologyDevVM = "dev-vm"
+
+// IsDevVM reports whether this inventory is running in single-VM mode.
+func (c ClusterSpec) IsDevVM() bool { return c.Topology == TopologyDevVM }
 
 type K8sSpec struct {
 	Distro  string `yaml:"distro" json:"distro"`   // rke2 | k3s
@@ -57,6 +109,7 @@ type NetworkSpec struct {
 	ServiceCIDR      string   `yaml:"service_cidr" json:"service_cidr"`
 	VIP              string   `yaml:"vip" json:"vip"`
 	LBPool           string   `yaml:"lb_pool" json:"lb_pool"`
+	IngressLBIP      string   `yaml:"ingress_lb_ip,omitempty" json:"ingress_lb_ip,omitempty"`
 	Gateway          string   `yaml:"gateway,omitempty" json:"gateway,omitempty"`
 	Nameservers      []string `yaml:"nameservers,omitempty" json:"nameservers,omitempty"`
 	PrefixLen        int      `yaml:"prefix_len,omitempty" json:"prefix_len,omitempty"`
@@ -90,10 +143,26 @@ type TargetSpec struct {
 
 type NodeSpec struct {
 	Hostname       string   `yaml:"hostname" json:"hostname"`
+	// DisplayName is the label vSphere shows in its inventory tree
+	// (the "VM 이름" column). When empty, Hostname is reused — most
+	// users want them the same. When set, vSphere renders this value
+	// while the guest OS still reports Hostname (some operators want
+	// "DEV-DEVVM-01 (cmars)" in vSphere but plain "devvm-01" inside
+	// the OS).
+	DisplayName    string   `yaml:"display_name,omitempty" json:"display_name,omitempty"`
 	IP             string   `yaml:"ip" json:"ip"`
 	ClusterIP      string   `yaml:"cluster_ip,omitempty" json:"cluster_ip,omitempty"` // Ceph cluster network (C-Net)
 	Roles          []string `yaml:"roles" json:"roles"`
-	OS             string   `yaml:"os" json:"os"` // microos | leap | tumbleweed
+	OS             string   `yaml:"os" json:"os"` // microos | leap | tumbleweed | ubuntu
+	OSVersion      string   `yaml:"os_version,omitempty" json:"os_version,omitempty"` // optional pin, e.g. "26.04"
+	// IPMode selects how the VM gets its primary-NIC IP at install time.
+	//   "" / "static"  → use NodeSpec.IP, NetworkSpec.Gateway, etc.
+	//   "dhcp"         → autoinstall configures dhcp4 on the primary NIC,
+	//                    NodeSpec.IP/Gateway are ignored. Wait_ssh and
+	//                    verify still need a discoverable IP — for now the
+	//                    operator should pin a static DHCP lease so the
+	//                    NodeSpec.IP entry stays accurate.
+	IPMode         string   `yaml:"ip_mode,omitempty" json:"ip_mode,omitempty"`
 	CPU            int      `yaml:"cpu,omitempty" json:"cpu,omitempty"`
 	MemoryGB       int      `yaml:"memory_gb,omitempty" json:"memory_gb,omitempty"`
 	DiskGB         int      `yaml:"disk_gb,omitempty" json:"disk_gb,omitempty"`
@@ -104,6 +173,9 @@ type NodeSpec struct {
 	DBDevices      []string `yaml:"db_devices,omitempty"      json:"db_devices,omitempty"`
 	WALDevices     []string `yaml:"wal_devices,omitempty"     json:"wal_devices,omitempty"`
 	OSDsPerDevice  int      `yaml:"osds_per_device,omitempty" json:"osds_per_device,omitempty"`
+	OSDDataSizeGB  int      `yaml:"osd_data_size_gb,omitempty" json:"osd_data_size_gb,omitempty"`
+	OSDDBSizeGB    int      `yaml:"osd_db_size_gb,omitempty"   json:"osd_db_size_gb,omitempty"`
+	OSDWALSizeGB   int      `yaml:"osd_wal_size_gb,omitempty"  json:"osd_wal_size_gb,omitempty"`
 	OSDEncrypted   bool     `yaml:"osd_encrypted,omitempty"   json:"osd_encrypted,omitempty"`
 	DeviceClass    string   `yaml:"device_class,omitempty"    json:"device_class,omitempty"` // auto | hdd | ssd | nvme
 
@@ -162,6 +234,28 @@ func (n NodeSpec) NeedsCephOSD() bool { return n.HasRole("ceph-osd") }
 
 // HasClusterNIC reports whether the node has a second NIC on the Ceph cluster network.
 func (n NodeSpec) HasClusterNIC() bool { return n.ClusterIP != "" }
+
+// UsesAutoinstall reports whether this node uses the Ubuntu autoinstall flow
+// (Subiquity + cloud-init NoCloud) instead of openSUSE Agama or Combustion.
+func (n NodeSpec) UsesAutoinstall() bool { return n.OS == "ubuntu" }
+
+// UsesAgama reports whether this node uses the openSUSE Agama installer
+// (Leap 16+ / Tumbleweed). Agama-driven nodes need ISO remaster on ESXi
+// and direct kernel boot on libvirt.
+func (n NodeSpec) UsesAgama() bool { return n.OS == "leap" || n.OS == "tumbleweed" }
+
+// UsesKernelBoot reports whether the orchestrator must extract vmlinuz/initrd
+// from the install ISO and pass them to Terraform for direct kernel boot.
+// Currently Agama-only (Leap/Tumbleweed). Ubuntu autoinstall boots from the
+// remastered ISO via CD-ROM, MicroOS uses the qcow2 base — neither needs the
+// kernel-extraction path.
+func (n NodeSpec) UsesKernelBoot() bool { return n.UsesAgama() }
+
+// UsesISOInstall reports whether this node boots from an attached install
+// ISO (remastered to embed our autoinstall cmdline) — Ubuntu autoinstall on
+// every target, Agama on ESXi. Libvirt Agama uses direct kernel boot
+// instead, so this is target-aware at the call site.
+func (n NodeSpec) UsesISOInstall() bool { return n.UsesAutoinstall() || n.UsesAgama() }
 
 // NeedsK3sSELinux is true for Leap Micro nodes that will run K3s/RKE2 — those
 // must install k3s-selinux on first boot via transactional-update + reboot.

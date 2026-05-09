@@ -8,10 +8,23 @@ export type DeviceClass = 'auto' | 'hdd' | 'ssd' | 'nvme';
 
 export interface NodeSpec {
   hostname: string;
+  /** vSphere inventory label. Empty = reuse hostname (most common). Set
+   *  this when you want vSphere to show e.g. "DEV-DEVVM-01" while the
+   *  guest OS still reports the plain "devvm-01". */
+  display_name?: string;
   ip: string;
   cluster_ip?: string;
   roles: Role[];
-  os: 'microos' | 'leap' | 'tumbleweed';
+  os: 'microos' | 'leap' | 'tumbleweed' | 'ubuntu';
+  /** Optional pinned OS version. For Ubuntu: '24.04' or '26.04'. */
+  os_version?: string;
+  /** "static" (default) or "dhcp". When "dhcp", IP / gateway fields are
+   *  ignored at install time — autoinstall enables dhcp4 on the primary NIC. */
+  ip_mode?: 'static' | 'dhcp';
+  /** Per-node SSH public keys (dev-vm mode lets the user paste keys directly). */
+  ssh_authorized_keys?: string[];
+  /** Pre-allocated MAC (deterministic from cluster_name + hostname; read-only). */
+  primary_mac?: string;
   cpu: number;
   memory_gb: number;
   disk_gb: number;
@@ -22,6 +35,13 @@ export interface NodeSpec {
    *  Required for ceph-osd nodes.
    *  Example: ['/dev/sdb', '/dev/sdc'] */
   data_devices?: string[];
+  /** Size (GB) of each data disk on THIS node. Disk count = data_devices length;
+   *  every entry gets allocated `osd_data_size_gb` GB. Per-node so heterogeneous
+   *  OSD clusters (e.g. some hosts with bigger HDDs) are expressible without a
+   *  cluster-wide default. */
+  osd_data_size_gb?: number;
+  osd_db_size_gb?: number;
+  osd_wal_size_gb?: number;
   /** Optional: devices that hold BlueStore DB (rocksdb). Strongly
    *  recommended when data_devices are HDDs — placing DB on SSD/NVMe
    *  improves OSD throughput 4-8×. cephadm will partition these
@@ -60,7 +80,8 @@ export interface NodeSpec {
   disk_provisioning?: 'thin' | 'thick' | 'thick-eager';
 }
 
-export type Topology = 'ceph-only' | 'k8s-only' | 'combined';
+// dev-vm = single-VM unattended-install verification mode (no cluster).
+export type Topology = 'ceph-only' | 'k8s-only' | 'combined' | 'dev-vm';
 
 export interface Inventory {
   cluster: {
@@ -155,6 +176,20 @@ export interface Inventory {
   addons: { ingress: 'ingress-nginx' | 'traefik' | 'none'; cert_manager: boolean;
             monitoring: 'kube-prometheus-stack' | 'none'; gitops: 'argocd' | 'flux' | 'none' };
   content: { ref: string; repo: string };
+  /** Cluster-wide credentials baked into the autoinstall user-data so newly
+   *  installed nodes are reachable via SSH (and optionally console) without
+   *  extra steps. SSH keys are paste-from-clipboard; node_password is a
+   *  cluster-wide root password (lab convenience — production should use
+   *  SSH keys only). */
+  cluster_auth: {
+    /** Sudo account name autoinstall creates on every node. SSH keys, the
+     *  optional console password, and the sudoers NOPASSWD entry all
+     *  attach to this account. Default: 'triangles'. */
+    username: string;
+    ssh_import_github: string[];   // GitHub usernames; keys auto-imported via ssh-import-id-gh
+    ssh_authorized_keys: string[]; // raw keys pasted directly
+    node_password: string;
+  };
 }
 
 export interface DiscoveredResources {
@@ -165,12 +200,24 @@ export interface DiscoveredResources {
 
 export interface WizardState {
   step: number;
-  mode: 'new' | 'resume';
+  // Top-level entry mode picked on Step 1.
+  //   new-cluster | new       — multi-node Ceph/K8s install (legacy 'new' is alias)
+  //   new-vm                  — single-VM unattended-install verification (dev-vm topology)
+  //   resume                  — pick up an in-progress run from %LOCALAPPDATA%
+  mode: 'new' | 'new-cluster' | 'new-vm' | 'resume';
   runId: string | null;
   contentDir: string | null;
   inventory: Inventory;
   discovered: DiscoveredResources;   // populated by Step 2 ESXi discovery; consumed by Step 4
   errors: string[];
+  // OS preferences picked in Step 3 — kept separate from inventory.nodes
+  // so they survive when the user navigates Step 3 ↔ Step 4 ↔ Step 1
+  // even before any nodes are added. Step 4 presets read these to fill
+  // in node.os when the user adds new nodes.
+  osPreferences: {
+    k8s:  NodeSpec['os'];
+    ceph: NodeSpec['os'];
+  };
 }
 
 const defaultInventory: Inventory = {
@@ -209,7 +256,7 @@ const defaultInventory: Inventory = {
     datastore: '',
     iso_datastore: '',
     network: 'VM Network',
-    tls_insecure: false,
+    tls_insecure: true,  // ESXi/Proxmox lab installs almost always use self-signed certs; defaulting to true matches reality and avoids "x509: certificate signed by unknown authority" on first connect.
     advertise_ip: ''
   },
   nodes: [],
@@ -222,8 +269,10 @@ const defaultInventory: Inventory = {
     failure_domain: 'host',
     default_osds_per_device: 1,
     default_encrypted: false,
-    osd_data_disk_size_gb: 2048,
-    osd_db_disk_size_gb: 100,
+    // Defaults are conservative — sized for first install / smoke test.
+    // Production operators bump these up explicitly before Apply.
+    osd_data_disk_size_gb: 64,
+    osd_db_disk_size_gb: 16,
     osd_wal_disk_size_gb: 0
   },
   addons: {
@@ -232,7 +281,8 @@ const defaultInventory: Inventory = {
     monitoring: 'kube-prometheus-stack',
     gitops: 'none'
   },
-  content: { ref: 'v0.1.0', repo: 'https://github.com/cmars-devops/cluster-installer-content.git' }
+  content: { ref: 'v0.1.0', repo: 'https://github.com/cmars-devops/cluster-installer-content.git' },
+  cluster_auth: { username: 'triangles', ssh_import_github: [], ssh_authorized_keys: [], node_password: '' }
 };
 
 export const wizardStore = writable<WizardState>({
@@ -242,7 +292,8 @@ export const wizardStore = writable<WizardState>({
   contentDir: null,
   inventory: defaultInventory,
   discovered: {},
-  errors: []
+  errors: [],
+  osPreferences: { k8s: 'microos', ceph: 'leap' }
 });
 
 export function gotoStep(idx: number) {

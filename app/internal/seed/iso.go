@@ -17,6 +17,7 @@ type SeedFormat string
 const (
 	SeedAgama    SeedFormat = "agama"     // openSUSE Leap / Tumbleweed (Agama installer)
 	SeedIgnition SeedFormat = "ignition"  // openSUSE MicroOS / SLE Micro
+	SeedCidata   SeedFormat = "cidata"    // Ubuntu autoinstall (NoCloud datasource — cloud-init scans for a CD labelled "cidata")
 )
 
 // File is one entry to write into the seed ISO.
@@ -41,11 +42,17 @@ func Build(outPath string, format SeedFormat, files []File) error {
 		label = "OEMDRV"
 	case SeedIgnition:
 		label = "ignition"
+	case SeedCidata:
+		// cloud-init NoCloud datasource scans connected block devices for
+		// either label "cidata" or "CIDATA"; the kernel cmdline carries
+		// `autoinstall ds=nocloud` (no URL) and the per-node user-data /
+		// meta-data files come from this CD-ROM.
+		label = "cidata"
 	default:
 		return fmt.Errorf("unknown seed format %q", format)
 	}
 
-	d, err := diskfs.Create(outPath, 16*1024*1024, diskfs.SectorSizeDefault) //nolint:staticcheck
+	d, err := diskfs.Create(outPath, 16*1024*1024, diskfs.Raw, diskfs.SectorSizeDefault) //nolint:staticcheck
 	if err != nil {
 		return err
 	}

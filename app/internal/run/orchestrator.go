@@ -17,10 +17,12 @@
 package run
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -130,13 +132,17 @@ func (o *Orchestrator) pipelineStages() []stage {
 	} else {
 		o.skip(state.StageDSUpload, "target!=esxi")
 	}
+	// Preflight is NOT in `common` because dev-vm topology bypasses
+	// Ansible entirely. Cluster topologies append it explicitly below.
 	common = append(common,
 		stage{state.StageTFInit, o.terraformInit},
 		stage{state.StageTFPlan, o.terraformPlan},
 		stage{state.StageTFApply, o.terraformApply},
 		stage{state.StageWaitSSH, o.waitSSH},
-		stage{state.StagePreflight, func(c context.Context) error { return o.runPlaybook(c, "playbooks/00-preflight.yml") }},
 	)
+	preflightStage := stage{state.StagePreflight, func(c context.Context) error {
+		return o.runPlaybook(c, "playbooks/00-preflight.yml")
+	}}
 
 	cephStage := stage{state.StageCeph, func(c context.Context) error { return o.runPlaybook(c, "playbooks/10-ceph-cephadm.yml") }}
 	k8sStage := stage{state.StageK8s, o.runK8sPlaybook}
@@ -144,15 +150,29 @@ func (o *Orchestrator) pipelineStages() []stage {
 	addonsStage := stage{state.StageAddons, func(c context.Context) error { return o.runPlaybook(c, "playbooks/40-addons.yml") }}
 
 	switch topo {
+	case inventory.TopologyDevVM:
+		// Single-VM unattended-install verification mode. Skip every
+		// cluster-level stage and replace preflight with a verify stage
+		// that proves the OS install actually worked (SSH, hostname,
+		// IP/MAC, network/DNS, package manager) — see run/verify.go.
+		o.skip(state.StagePreflight, "topology=dev-vm")
+		o.skip(state.StageCeph, "topology=dev-vm")
+		o.skip(state.StageK8s, "topology=dev-vm")
+		o.skip(state.StageCSI, "topology=dev-vm")
+		o.skip(state.StageAddons, "topology=dev-vm")
+		return append(common, stage{state.StageVerify, o.runVerify})
+
 	case "ceph-only":
+		o.skip(state.StageVerify, "topology=ceph-only (dev-vm only)")
 		o.skip(state.StageK8s, "topology=ceph-only")
 		o.skip(state.StageCSI, "topology=ceph-only")
 		o.skip(state.StageAddons, "topology=ceph-only")
-		return append(common, cephStage)
+		return append(common, preflightStage, cephStage)
 
 	case "k8s-only":
+		o.skip(state.StageVerify, "topology=k8s-only (dev-vm only)")
 		o.skip(state.StageCeph, "topology=k8s-only")
-		out := append(common, k8sStage)
+		out := append(common, preflightStage, k8sStage)
 		if o.Inventory.Cluster.ExternalCeph != nil {
 			out = append(out, csiStage)
 		} else {
@@ -161,7 +181,8 @@ func (o *Orchestrator) pipelineStages() []stage {
 		return append(out, addonsStage)
 
 	default: // "combined"
-		return append(common, cephStage, k8sStage, csiStage, addonsStage)
+		o.skip(state.StageVerify, "topology=combined (dev-vm only)")
+		return append(common, preflightStage, cephStage, k8sStage, csiStage, addonsStage)
 	}
 }
 
@@ -178,10 +199,32 @@ func (o *Orchestrator) skip(s state.Stage, reason string) {
 // server stays up for the rest of the run because nodes may re-fetch
 // profiles on installer retries.
 func (o *Orchestrator) startHTTPAndRenderSeeds(ctx context.Context) error {
-	// 1. Pick advertise IP (the Windows NIC that routes to the target).
-	hostIP, err := netutil.PickAdvertiseIP(o.Inventory.Target.Endpoint)
-	if err != nil {
-		return fmt.Errorf("pick advertise IP: %w", err)
+	// 1. Pick advertise IP — the Windows NIC reachable FROM the VMs, not
+	// the one reachable to the hypervisor management endpoint. Multi-homed
+	// hosts (typical: laptop on Wi-Fi for ESXi mgmt + LAN for VM network)
+	// otherwise advertise the wrong NIC and VMs hang at cloud-init network
+	// stage trying to fetch user-data over an unreachable subnet.
+	//
+	// Order:
+	//   1. target.advertise_ip (manual override, when set in Step 2)
+	//   2. UDP-dial the VM network gateway — the NIC routing there is the
+	//      one VMs will use to reach us back
+	//   3. fallback: hypervisor endpoint (preserved for legacy/single-NIC)
+	var hostIP string
+	if ip := o.Inventory.Target.AdvertiseIP; ip != "" {
+		hostIP = ip
+	} else if gw := o.Inventory.Network.Gateway; gw != "" {
+		ip, err := netutil.PickAdvertiseIP(gw)
+		if err != nil {
+			return fmt.Errorf("pick advertise IP for VM gateway %s: %w", gw, err)
+		}
+		hostIP = ip
+	} else {
+		ip, err := netutil.PickAdvertiseIP(o.Inventory.Target.Endpoint)
+		if err != nil {
+			return fmt.Errorf("pick advertise IP: %w", err)
+		}
+		hostIP = ip
 	}
 	o.hostIP = hostIP
 
@@ -229,18 +272,22 @@ func (o *Orchestrator) startHTTPAndRenderSeeds(ctx context.Context) error {
 	// 6. Render seed payloads per node.
 	hostsEntries := seed.HostsEntriesFromInventory(o.Inventory)
 	for _, n := range o.Inventory.Nodes {
-		ctx := seed.BuildContext(o.Inventory, n, o.Run.RootPasswordHash, hostsEntries)
+		sctx := seed.BuildContext(o.Inventory, n, o.Run.RootPasswordHash, hostsEntries)
 		switch n.OS {
 		case "leap":
-			if err := o.renderAgama(ctx, n, "leap.auto.json.tmpl"); err != nil {
+			if err := o.renderAgama(sctx, n, "leap.auto.json.tmpl"); err != nil {
 				return err
 			}
 		case "tumbleweed":
-			if err := o.renderAgama(ctx, n, "tumbleweed.auto.json.tmpl"); err != nil {
+			if err := o.renderAgama(sctx, n, "tumbleweed.auto.json.tmpl"); err != nil {
 				return err
 			}
 		case "microos":
-			if err := o.renderCombustion(ctx, n); err != nil {
+			if err := o.renderCombustion(sctx, n); err != nil {
+				return err
+			}
+		case "ubuntu":
+			if err := o.renderAutoinstall(ctx, sctx, n); err != nil {
 				return err
 			}
 		default:
@@ -261,6 +308,124 @@ func (o *Orchestrator) renderAgama(ctx seed.Context, n inventory.NodeSpec, tmplN
 		return err
 	}
 	o.Log.Info("seed.agama", "host", n.Hostname, "url", o.baseURL+"/profiles/"+n.Hostname+".json")
+	return nil
+}
+
+// renderAutoinstall builds a per-node "cidata" ISO holding user-data +
+// meta-data for Ubuntu autoinstall. The big install ISO is remastered ONCE
+// per OS family (see remasterUbuntuShared) and referenced by every Ubuntu
+// VM; the small cidata ISO carries the only per-node payload (~64 KB).
+//
+// cloud-init's NoCloud datasource scans block devices for a CD with
+// volume label "cidata" and reads user-data + meta-data straight off it
+// — no HTTP fetch, no per-node remaster, no kernel-cmdline gymnastics.
+//
+// Also writes the same files under staging/profiles/<hostname>/ so the
+// HTTP server can still serve them for diagnostic curl-from-VM workflows
+// or for ds=nocloud-net debug paths; these are not the primary delivery
+// mechanism.
+func (o *Orchestrator) renderAutoinstall(rctx context.Context, sctx seed.Context, n inventory.NodeSpec) error {
+	udTmpl := filepath.Join(o.ContentDir, "seeds", "autoinstall", "user-data.tmpl")
+	userData, err := seed.RenderFile(udTmpl, sctx)
+	if err != nil {
+		return fmt.Errorf("render autoinstall user-data %s: %w", n.Hostname, err)
+	}
+	// Sudo username override: the content template hardcodes 'triangles'
+	// in identity.username, sudoers.d/90-triangles, /home/triangles,
+	// chpasswd, etc. When the operator picked a different username on
+	// Step 1, swap every literal 'triangles' for the chosen value. Done
+	// Go-side so the swap works with the existing content tag (no
+	// content-repo update needed).
+	if u := o.Inventory.ClusterAuth.SudoUser(); u != "" && u != "triangles" {
+		userData = rewriteUserDataUsername(userData, u)
+	}
+	// Network block rewrite — MAC-based matching, always.
+	// The content template hardcodes the NIC name (ens192) as the
+	// netplan ethernets KEY. That's brittle: vSphere may attach a
+	// different adapter (e1000e → ens33 in the field, vmxnet3 → ens192,
+	// libvirt virtio → enp1s0, …) and a name mismatch silently drops
+	// the static IP and falls back to DHCP. We always rewrite the
+	// `network:` block to use `match: { macaddress: ... }` + `set-name:
+	// ens192` so the rule pins to the deterministically-allocated MAC
+	// regardless of NIC adapter type, and the installed system always
+	// surfaces the interface as ens192. Static / DHCP both go through
+	// the same path now; n.PrimaryMAC is pre-allocated at run start.
+	if n.PrimaryMAC != "" {
+		userData = rewriteUserDataNetwork(userData, n, sctx)
+	}
+	// dev-vm minimal install: the content template's `packages:` list
+	// (chrony / lvm2 / nfs-common / open-iscsi / curl / jq) is for
+	// CLUSTER nodes (cephadm + RKE2 prep). On a single independent VM
+	// none of those are needed at install time — and any of them
+	// failing to download from the apt mirror at install time aborts
+	// the whole install with `curtin system-install ... exit 100`,
+	// which we observed in the field. Strip the block so subiquity
+	// installs just the base + openssh-server (ssh.install-server: true).
+	// The operator can apt-install whatever they need post-install.
+	if o.Inventory.Cluster.IsDevVM() {
+		userData = stripUserDataPackages(userData)
+	}
+	mdTmpl := filepath.Join(o.ContentDir, "seeds", "autoinstall", "meta-data.tmpl")
+	metaData, err := seed.RenderFile(mdTmpl, sctx)
+	if err != nil {
+		return fmt.Errorf("render autoinstall meta-data %s: %w", n.Hostname, err)
+	}
+
+	// HTTP-served copy (diagnostic / fallback only).
+	dir := filepath.Join(o.stagingDir, "profiles", n.Hostname)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "user-data"), userData, 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "meta-data"), metaData, 0o644); err != nil {
+		return err
+	}
+
+	// Per-node cidata ISO (the actual delivery channel). Built via pycdlib
+	// because go-diskfs's iso9660 backend miscounts byte writes on small
+	// files (consistent "copied N bytes, expected 0" failure observed on
+	// 64-byte meta-data writes). pycdlib is already on hand for the Ubuntu
+	// install-ISO remaster, so the dependency cost is zero.
+	isoPath := filepath.Join(o.stagingDir, "seeds", "seed-"+n.Hostname+".iso")
+	if err := o.buildCidataISO(rctx, dir, isoPath); err != nil {
+		return fmt.Errorf("build cidata iso %s: %w", n.Hostname, err)
+	}
+	o.Log.Info("seed.autoinstall", "host", n.Hostname, "cidata", isoPath)
+	return nil
+}
+
+// buildCidataISO shells out to content/seeds/autoinstall/build-cidata.py via
+// the embedded uv runtime. The script reads user-data + meta-data from
+// stagingProfileDir and writes a small ISO9660 image labeled "cidata" to
+// outPath. cloud-init's NoCloud datasource scans connected block devices
+// for that volume label and discovers the per-node payload automatically.
+func (o *Orchestrator) buildCidataISO(ctx context.Context, stagingProfileDir, outPath string) error {
+	uvPath := filepath.Join(apruntime.BinDir(), "uv.exe")
+	if _, err := os.Stat(uvPath); err != nil {
+		return fmt.Errorf("uv not extracted: %w", err)
+	}
+	scriptPath := filepath.Join(o.ContentDir, "seeds", "autoinstall", "build-cidata.py")
+	if _, err := os.Stat(scriptPath); err != nil {
+		return fmt.Errorf("build-cidata.py not found: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		return err
+	}
+	_ = os.Remove(outPath) // idempotent — clear leftover from a failed earlier run
+
+	cmd := exec.CommandContext(ctx, uvPath,
+		"run", "--quiet", "--with", "pycdlib",
+		"python", scriptPath,
+		"--user-data", filepath.Join(stagingProfileDir, "user-data"),
+		"--meta-data", filepath.Join(stagingProfileDir, "meta-data"),
+		"--out", outPath,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("pycdlib build-cidata: %w\noutput:\n%s", err, string(out))
+	}
 	return nil
 }
 
@@ -322,12 +487,36 @@ func (o *Orchestrator) terraformApply(ctx context.Context) error {
 }
 
 func (o *Orchestrator) waitSSH(ctx context.Context) error {
-	hosts := make([]string, 0, len(o.Inventory.Nodes))
+	o.emit("run:line", fmt.Sprintf("waiting for SSH on %d nodes (timeout 30m each)", len(o.Inventory.Nodes)))
+	// Group hosts by SSH user. openSUSE seeds enable root login; Ubuntu
+	// autoinstall disables root by default and creates the primary
+	// 'ubuntu' user — wait for the right identity per node.
+	byUser := map[string][]string{}
 	for _, n := range o.Inventory.Nodes {
-		hosts = append(hosts, n.IP)
+		u := o.sshUserFor(n.OS)
+		byUser[u] = append(byUser[u], n.IP)
 	}
-	o.emit("run:line", fmt.Sprintf("waiting for SSH on %d nodes (timeout 30m each)", len(hosts)))
-	return runner.WaitForSSH(ctx, hosts, "root", o.sshKeyPath(), 30*time.Minute)
+	for user, hosts := range byUser {
+		if err := runner.WaitForSSH(ctx, hosts, user, o.sshKeyPath(), 30*time.Minute); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sshUserFor maps an OS family to the user account the OS-install seed
+// authorised our SSH key against. For Ubuntu autoinstall the answer is
+// the cluster-wide sudo user (Step 1 → "사용자명") which subiquity
+// creates in late-commands; for openSUSE Combustion/Agama paths the
+// seed authorises root directly. Centralised so verify.go and waitSSH
+// stay in lockstep on which identity to use.
+func (o *Orchestrator) sshUserFor(os string) string {
+	switch os {
+	case "ubuntu":
+		return o.Inventory.ClusterAuth.SudoUser()
+	default:
+		return "root"
+	}
 }
 
 func (o *Orchestrator) runK8sPlaybook(ctx context.Context) error {
@@ -370,7 +559,10 @@ func (o *Orchestrator) tfRun(stackDir, varFile string) *runner.TFRun {
 }
 
 func (o *Orchestrator) tfStackDir() string {
-	return filepath.Join(o.runDir(), "terraform", o.Inventory.Target.Type)
+	// Keep the same `stacks/<target>/` layout as content/terraform/ so
+	// the relative `source = "../../modules/<name>"` references in
+	// stack main.tf files resolve correctly after copying.
+	return filepath.Join(o.runDir(), "terraform", "stacks", o.Inventory.Target.Type)
 }
 
 // copyStackToRun copies content/terraform/stacks/<target>/ + modules/
@@ -469,4 +661,185 @@ func (o *Orchestrator) emit(name string, data ...interface{}) {
 	if o.Events != nil {
 		o.Events.Emit(name, data...)
 	}
+}
+
+// stripUserDataPackages removes the `packages:` block from a rendered
+// subiquity user-data document. The block is YAML — a top-level
+// (autoinstall-level, 2-space indented) `packages:` key followed by N
+// list entries (`    - <name>`). The block ends at the next sibling
+// 2-space-indented key (e.g. `late-commands:` or `shutdown:`) or EOF.
+//
+// Why: the content template's package list is cluster-prep (cephadm,
+// nfs-common, open-iscsi, jq, …) and is wrong for the single-VM dev-vm
+// flow. Worse, if any one of those packages can't download at install
+// time (transient mirror outage, partial DHCP, GeoIP redirect to a slow
+// mirror, …) subiquity aborts the whole install. Dropping the block
+// keeps the install minimal and resilient — the operator apt-installs
+// what they want post-boot.
+func stripUserDataPackages(userData []byte) []byte {
+	const blockKey = "  packages:" // 2-space indent, autoinstall child
+	lines := bytes.Split(userData, []byte("\n"))
+	out := make([][]byte, 0, len(lines))
+	skipping := false
+	for _, line := range lines {
+		if !skipping && bytes.Equal(bytes.TrimRight(line, " \t"), []byte(blockKey)) {
+			// Drop the `  packages:` header and start skipping its
+			// continuation lines (deeper indent).
+			skipping = true
+			continue
+		}
+		if skipping {
+			// A line with indent ≤ 2 spaces and a non-space at column 2
+			// is the next sibling key — block ends, resume copying. An
+			// empty line counts as part of the block's whitespace.
+			if len(line) == 0 {
+				continue
+			}
+			if line[0] != ' ' || (len(line) >= 3 && line[2] != ' ') {
+				skipping = false
+				out = append(out, line)
+			}
+			continue
+		}
+		out = append(out, line)
+	}
+	return bytes.Join(out, []byte("\n"))
+}
+
+// rewriteUserDataUsername replaces every literal occurrence of the default
+// 'triangles' sudo username in a rendered subiquity user-data document
+// with the operator-chosen value. The content template hardcodes the
+// name in seven places (identity.username, sudoers entry filename + body,
+// /home/triangles paths, -o/-g triangles owner, sudo -u triangles in
+// ssh-import-id-gh, chpasswd target). They're all the same token, so a
+// global string replace is safe — there's no other context where
+// 'triangles' would legitimately appear in this template.
+func rewriteUserDataUsername(userData []byte, newUser string) []byte {
+	return bytes.ReplaceAll(userData, []byte("triangles"), []byte(newUser))
+}
+
+// rewriteUserDataNetwork replaces the entire `  network:` ... `<next>:`
+// block in a rendered subiquity user-data document with a freshly-built
+// netplan block that pins to NodeSpec.PrimaryMAC. This makes the network
+// config robust to vSphere attaching the NIC under a different name than
+// the content template assumes (the field-failure mode: template ships
+// ens192, ESXi attaches e1000e → ens33, netplan apply silently no-ops
+// the static config, VM ends up on DHCP).
+//
+// Output shape (static):
+//
+//	  network:
+//	    version: 2
+//	    ethernets:
+//	      primary:
+//	        match:
+//	          macaddress: "00:50:56:..."
+//	        set-name: ens192
+//	        addresses:
+//	          - "10.0.0.50/24"
+//	        routes:
+//	          - to: default
+//	            via: 10.0.0.1
+//	        nameservers:
+//	          addresses: ["1.1.1.1", "8.8.8.8"]
+//
+// Output shape (dhcp):
+//
+//	  network:
+//	    version: 2
+//	    ethernets:
+//	      primary:
+//	        match:
+//	          macaddress: "00:50:56:..."
+//	        set-name: ens192
+//	        dhcp4: true
+//
+// The `set-name: ens192` line normalises the in-OS NIC name regardless
+// of which adapter type vSphere attached, so verify / docs / scripts can
+// keep referring to ens192 consistently.
+func rewriteUserDataNetwork(userData []byte, n inventory.NodeSpec, sctx seed.Context) []byte {
+	iface := sctx.Node.NetworkInterface
+	if iface == "" {
+		iface = "ens192"
+	}
+	mac := n.PrimaryMAC
+
+	var b bytes.Buffer
+	b.WriteString("  network:\n")
+	b.WriteString("    version: 2\n")
+	b.WriteString("    ethernets:\n")
+	b.WriteString("      primary:\n")
+	b.WriteString("        match:\n")
+	b.WriteString(fmt.Sprintf("          macaddress: \"%s\"\n", mac))
+	b.WriteString(fmt.Sprintf("        set-name: %s\n", iface))
+	if n.IPMode == "dhcp" {
+		b.WriteString("        dhcp4: true\n")
+	} else {
+		b.WriteString("        addresses:\n")
+		b.WriteString(fmt.Sprintf("          - \"%s/%d\"\n", n.IP, defaultPrefixLen(sctx.Network.PrefixLen)))
+		b.WriteString("        routes:\n")
+		b.WriteString("          - to: default\n")
+		b.WriteString(fmt.Sprintf("            via: %s\n", sctx.Network.Gateway))
+		if len(sctx.Network.Nameservers) > 0 {
+			b.WriteString("        nameservers:\n")
+			b.WriteString("          addresses: [")
+			for i, ns := range sctx.Network.Nameservers {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				b.WriteString(fmt.Sprintf("\"%s\"", ns))
+			}
+			b.WriteString("]\n")
+		}
+	}
+	newBlock := b.Bytes()
+
+	// Splice: find `  network:` line, skip until next 2-space sibling
+	// key, emit newBlock in place.
+	const headerKey = "  network:" // 2-space indent, autoinstall child
+	lines := bytes.Split(userData, []byte("\n"))
+	out := make([][]byte, 0, len(lines)+8)
+	state := 0 // 0=before, 1=inside-old-block, 2=after
+	for _, line := range lines {
+		switch state {
+		case 0:
+			if bytes.Equal(bytes.TrimRight(line, " \t"), []byte(headerKey)) {
+				// Insert new block (sans trailing newline so Join
+				// re-inserts one).
+				out = append(out, bytes.TrimRight(newBlock, "\n"))
+				state = 1
+				continue
+			}
+			out = append(out, line)
+		case 1:
+			// Inside old block: anything indented > 2 spaces (i.e. line
+			// starts with " " and column 2 is " ") is a continuation.
+			// First line at indent ≤2 with non-space at col 2 is the
+			// next sibling key — block ends.
+			if len(line) == 0 {
+				continue
+			}
+			if line[0] != ' ' || (len(line) >= 3 && line[2] != ' ') {
+				out = append(out, line)
+				state = 2
+				continue
+			}
+			// continuation, skip
+		case 2:
+			out = append(out, line)
+		}
+	}
+	if state == 0 {
+		// No `  network:` header found — leave a visible warning rather
+		// than silently shipping the wrong config.
+		return append([]byte("# WARN: network rewrite did not find a `network:` block\n"), userData...)
+	}
+	return bytes.Join(out, []byte("\n"))
+}
+
+func defaultPrefixLen(p int) int {
+	if p == 0 {
+		return 24
+	}
+	return p
 }

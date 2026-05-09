@@ -65,7 +65,9 @@ func RemasterAgamaISO(ctx context.Context, srcPath, dstPath string, profileURL, 
 	// a size hint at create-time; we add 64 MB margin for the rebuilt
 	// directory tree + extra metadata blocks.
 	dstSize := srcInfo.Size() + 64*1024*1024
-	dst, err := diskfs.Create(dstPath, dstSize, diskfs.SectorSizeDefault)
+	// Idempotent: clear leftover from a previously failed remaster.
+	_ = os.Remove(dstPath)
+	dst, err := diskfs.Create(dstPath, dstSize, diskfs.Raw, diskfs.SectorSizeDefault)
 	if err != nil {
 		return fmt.Errorf("create dst iso: %w", err)
 	}

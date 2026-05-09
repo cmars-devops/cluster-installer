@@ -1,6 +1,7 @@
 <script lang="ts">
   import { _, locale } from 'svelte-i18n';
   import { wizardStore } from './stores/wizard';
+  import wordmarkSvg from './assets/triangles-logo-white.svg?raw';
   import Step1Project from './wizard/Step1Project.svelte';
   import Step2Target from './wizard/Step2Target.svelte';
   import Step3OS from './wizard/Step3OS.svelte';
@@ -16,11 +17,8 @@
 <main>
   <header>
     <div class="brand">
-      <span class="logo">▶</span>
-      <div>
-        <h1>{$_('app.title')}</h1>
-        <p class="subtitle">{$_('app.subtitle')}</p>
-      </div>
+      <div class="wordmark" aria-label="Triangles — {$_('app.title')}">{@html wordmarkSvg}</div>
+      <p class="subtitle">{$_('app.subtitle')}</p>
     </div>
 
     <nav class="steps" aria-label="wizard progress">
@@ -64,11 +62,11 @@
            padding: 0.85rem 1.5rem; border-bottom: 1px solid #27272a;
            background: linear-gradient(to bottom, #16161a, #121216); }
 
-  .brand { display: flex; gap: 0.75rem; align-items: center; }
-  .logo { display: inline-flex; align-items: center; justify-content: center;
-          width: 28px; height: 28px; background: #3b82f6; color: white;
-          border-radius: 6px; font-size: 0.85rem; font-weight: 700; }
-  h1 { margin: 0; font-size: 1.05rem; font-weight: 600; }
+  .brand { display: flex; flex-direction: column; gap: 0.15rem;
+           align-items: flex-start; }
+  .wordmark { display: block; line-height: 0;
+              filter: drop-shadow(0 0 10px rgba(0, 117, 194, 0.4)); }
+  .wordmark :global(svg) { height: 32px; width: auto; display: block; }
   .subtitle { margin: 0; font-size: 0.72rem; color: #a1a1aa; }
 
   .steps { display: flex; gap: 0.4rem; justify-content: center; flex-wrap: wrap; }
@@ -90,7 +88,7 @@
   .lang button.active { background: #27272a; color: #e4e4e7; border-color: #52525b; }
   .lang button:hover { color: #e4e4e7; }
 
-  .content { padding: 1.5rem 2rem; max-width: 1400px; margin: 0 auto; width: 100%;
+  .content { padding: 1.5rem 2rem; max-width: 1820px; margin: 0 auto; width: 100%;
              box-sizing: border-box; overflow: auto; }
 
   footer { display: flex; gap: 1.5rem; padding: 0.5rem 1.5rem;

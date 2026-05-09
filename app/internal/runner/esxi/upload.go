@@ -150,10 +150,15 @@ func (c *Client) ensureDatastoreDir(ctx context.Context, ds *object.Datastore, d
 	dsPath := ds.Path(dsRel)
 	// MakeDirectory(..., createParents=true) walks the chain for us.
 	if err := fm.MakeDirectory(ctx, dsPath, c.dc, true); err != nil {
-		// vSphere returns FileAlreadyExists for an existing dir — the
-		// govmomi error type comparison is verbose, substring match is
-		// good enough.
-		if strings.Contains(err.Error(), "AlreadyExists") {
+		// vSphere reports an existing directory in two distinct forms
+		// depending on which API path raised it:
+		//   - SOAP fault name:  "FileAlreadyExists"
+		//   - Human message:    "...already exists"  (e.g. ServerFaultCode
+		//                       wrapping it)
+		// Both are benign for our mkdir-p semantics, so accept either.
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "alreadyexists") ||
+			strings.Contains(msg, "already exists") {
 			return nil
 		}
 		return err
