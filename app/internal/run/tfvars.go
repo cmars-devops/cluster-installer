@@ -226,15 +226,30 @@ func (o *Orchestrator) writeProxmoxTFVars(path string) error {
 // upstream with a clear error rather than producing a tfvars.json that
 // would silently boot Leap into the standard installer's manual flow.
 func (o *Orchestrator) writeESXiTFVars(path string) error {
-	// Resolve ISO datastore: explicit Step 2 value > Target.Datastore (Step 2
-	// fallback) > dev-vm node datastore (single-VM convenience). Cluster mode
-	// will still require an explicit Step 2 entry because that scales.
+	// Resolve ISO datastore. Priority:
+	//   1. explicit target.iso_datastore (Step 2 picker)
+	//   2. target.datastore (legacy Step 2 single-datastore)
+	//   3. ANY node's per-node datastore (Step 4) — first non-empty one
+	//
+	// Rationale: when the operator loads a saved inventory but didn't
+	// re-pick a saved target, target.* is empty while node-level
+	// datastores are still populated. Falling through to those covers
+	// the common single-array lab without forcing a Step 2 round-trip.
+	// Multi-array clusters that genuinely need a separate ISO datastore
+	// can still set it explicitly in Step 2 — priority 1 wins.
 	if o.Inventory.Target.ISODatastore == "" {
-		if o.Inventory.Target.Datastore != "" {
+		switch {
+		case o.Inventory.Target.Datastore != "":
 			o.Inventory.Target.ISODatastore = o.Inventory.Target.Datastore
-		} else if o.Inventory.Cluster.IsDevVM() && len(o.Inventory.Nodes) > 0 && o.Inventory.Nodes[0].Datastore != "" {
-			o.Inventory.Target.ISODatastore = o.Inventory.Nodes[0].Datastore
-		} else {
+		default:
+			for _, n := range o.Inventory.Nodes {
+				if n.Datastore != "" {
+					o.Inventory.Target.ISODatastore = n.Datastore
+					break
+				}
+			}
+		}
+		if o.Inventory.Target.ISODatastore == "" {
 			return fmt.Errorf("ISO upload datastore is required (Step 4 → \"VM 디스크 데이터스토어\" or Step 2)")
 		}
 	}
