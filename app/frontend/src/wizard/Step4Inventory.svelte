@@ -11,7 +11,8 @@
     addDevVMNIC, removeDevVMNIC, updateDevVMNIC, syncPrimaryFromLegacy,
     type Role, type NodeSpec, type DiskSpec, type NICSpec
   } from '../stores/wizard';
-  import { api } from '../lib/api';
+  import { api, type SavedInventory } from '../lib/api';
+  import { onMount } from 'svelte';
 
   const k8sRoles: Role[]  = ['control-plane', 'etcd', 'worker'];
   const cephRoles: Role[] = ['ceph-mon', 'ceph-mgr', 'ceph-osd', 'ceph-mds', 'ceph-rgw'];
@@ -118,6 +119,102 @@
 
   let validationResult = $state<{ valid: boolean; errors: string[] } | null>(null);
   let validating = $state(false);
+
+  // ── Saved-inventory registry ────────────────────────────────────────
+  // Cluster topologies (network + nodes + ceph + addons) are tedious
+  // to retype every run. Same picker pattern as Step 1 saved-cred /
+  // Step 2 saved-target — load swaps the relevant subtrees in place
+  // (target + cluster_auth left untouched so the operator can pair
+  // any inventory with any (hypervisor, credential) tuple). Hidden
+  // for dev-vm topology — saving a single VM as a "cluster profile"
+  // doesn't make sense.
+  let savedInvs = $state<SavedInventory[]>([]);
+  let selectedInvID = $state<string>('');
+  let savingInv = $state(false);
+  let invError = $state<string | null>(null);
+
+  onMount(async () => {
+    try { savedInvs = await api.listSavedInventories(); }
+    catch (e) { console.warn('[savedInvs] list failed:', e); }
+  });
+
+  async function refreshSavedInvs() {
+    try { savedInvs = await api.listSavedInventories(); }
+    catch (e) { console.warn('[savedInvs] refresh failed:', e); }
+  }
+
+  function applySavedInventory(id: string) {
+    const inv = savedInvs.find((x) => x.id === id);
+    if (!inv) { selectedInvID = ''; return; }
+    selectedInvID = id;
+    // Replace exactly the 5 subtrees the saved record carries; leave
+    // target + cluster_auth + discovered + osPreferences alone so the
+    // operator's environment-specific picks survive.
+    wizardStore.update((s) => ({
+      ...s,
+      inventory: {
+        ...s.inventory,
+        cluster: { ...s.inventory.cluster, ...(inv.cluster ?? {}) },
+        network: { ...s.inventory.network, ...(inv.network ?? {}) },
+        nodes:    Array.isArray(inv.nodes) ? inv.nodes : [],
+        ceph:     { ...s.inventory.ceph,    ...(inv.ceph    ?? {}) },
+        addons:   { ...s.inventory.addons,  ...(inv.addons  ?? {}) },
+        content:  { ...s.inventory.content, ...(inv.content ?? {}) },
+      }
+    }));
+    api.touchSavedInventory(id).then(refreshSavedInvs).catch(() => {});
+  }
+
+  async function saveCurrentInventory() {
+    invError = null;
+    const inv = $wizardStore.inventory;
+    if (!inv.cluster.name) {
+      invError = '클러스터 이름을 먼저 입력해주세요.';
+      return;
+    }
+    if (inv.nodes.length === 0) {
+      invError = '저장할 노드가 없습니다 — 노드를 먼저 추가해주세요.';
+      return;
+    }
+    savingInv = true;
+    try {
+      const existing = savedInvs.find((x) => x.id === selectedInvID);
+      const labelDefault = existing?.label
+        || `${inv.cluster.name} (${inv.nodes.length} nodes, ${inv.cluster.topology || 'combined'})`;
+      const label = window.prompt('저장할 인벤토리 이름', labelDefault) ?? labelDefault;
+      const payload: SavedInventory = {
+        id: selectedInvID || '',
+        label: label.trim() || labelDefault,
+        cluster: inv.cluster,
+        network: inv.network,
+        nodes:   inv.nodes,
+        ceph:    inv.ceph,
+        addons:  inv.addons,
+        content: inv.content
+      };
+      const saved = await api.saveInventory(payload);
+      selectedInvID = saved.id;
+      await refreshSavedInvs();
+    } catch (e) {
+      invError = String(e);
+    } finally {
+      savingInv = false;
+    }
+  }
+
+  async function deleteSelectedInventory() {
+    if (!selectedInvID) return;
+    const inv = savedInvs.find((x) => x.id === selectedInvID);
+    if (!inv) return;
+    if (!window.confirm(`'${inv.label}' 인벤토리를 삭제할까요?`)) return;
+    try {
+      await api.deleteSavedInventory(selectedInvID);
+      selectedInvID = '';
+      await refreshSavedInvs();
+    } catch (e) {
+      invError = String(e);
+    }
+  }
 
   // ── Ceph-specific updaters ────────────────────────────────────────────
   function updateCeph(patch: Partial<typeof $wizardStore.inventory.ceph>) {
@@ -1087,6 +1184,40 @@ content:
 
 <div class="layout">
   <div class="form-col">
+    <!-- 저장된 인벤토리 — Step 1 saved-cred / Step 2 saved-target과 같은
+         패턴. 클러스터 토폴로지(cluster + network + nodes + ceph + addons
+         + content) 한 묶음을 저장/로드. target과 cluster_auth는 별도 store
+         (불러올 때 덮어쓰지 않음). dev-vm 토폴로지에서는 단일 VM이라 의미
+         없으므로 안 보임. -->
+    <Section title="저장된 클러스터 인벤토리"
+             subtitle="이전에 저장한 클러스터 토폴로지(노드/네트워크/Ceph 설정)를 한 번에 불러옵니다. 타겟 서버와 자격증명은 영향받지 않으므로 같은 인벤토리를 다른 하이퍼바이저/계정과 조합해서 재배포할 수 있습니다.">
+      {#if savedInvs.length > 0}
+        <Field label="저장된 인벤토리에서 선택">
+          <div class="saved-row">
+            <select value={selectedInvID}
+                    onchange={(e) => applySavedInventory((e.target as HTMLSelectElement).value)}>
+              <option value="">— 새로 입력 —</option>
+              {#each savedInvs as inv}
+                <option value={inv.id}>{inv.label}</option>
+              {/each}
+            </select>
+            {#if selectedInvID}
+              <Button variant="danger" onclick={deleteSelectedInventory}>삭제</Button>
+            {/if}
+          </div>
+        </Field>
+      {/if}
+      <div class="saved-actions">
+        <Button variant="secondary" disabled={savingInv} onclick={saveCurrentInventory}>
+          {savingInv ? '저장 중…' : (selectedInvID ? '선택 항목 업데이트' : '현재 인벤토리 저장')}
+        </Button>
+        {#if invError}<Badge tone="danger">{invError}</Badge>{/if}
+        {#if !selectedInvID && savedInvs.length === 0}
+          <span class="muted">노드/네트워크/Ceph 구성을 마친 뒤 '현재 인벤토리 저장'을 누르면 다음 실행에서 한 번에 불러옵니다.</span>
+        {/if}
+      </div>
+    </Section>
+
     <Section title={$_('step4.cluster')}>
       <div class="grid-2">
         <Field label={$_('step4.clusterName')} hint={$_('step4.clusterNameHint')} required>
@@ -1956,4 +2087,12 @@ content:
     color: #71717a !important;
     cursor: not-allowed;
   }
+
+  /* Saved-inventory picker — matches Step 1/2 saved-* picker visuals
+     so the three registries feel like one consistent feature. */
+  .saved-row { display: flex; gap: 0.5rem; align-items: stretch; }
+  .saved-row select { flex: 1; }
+  .saved-actions { display: flex; gap: 0.6rem; align-items: center;
+                   margin-top: 0.5rem; flex-wrap: wrap; }
+  .saved-actions .muted { font-size: 0.78rem; color: #71717a; }
 </style>

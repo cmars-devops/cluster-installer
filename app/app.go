@@ -35,6 +35,12 @@ type App struct {
 	// offer the same "pick from saved" UX. Different lifecycle from
 	// targets, so kept in a separate file/store.
 	creds *state.CredentialStore
+	// invs persists saved cluster topologies (cluster + network +
+	// nodes + ceph + addons + content) — everything an inventory
+	// needs except the environment-specific target + credential
+	// pairs which live in their own stores. Lets operators recall
+	// a 9-node Ceph layout from a dropdown instead of retyping it.
+	invs *state.InventoryStore
 
 	// runCancels tracks the cancel function for each in-flight ApplyRun so
 	// CancelRun(runID) can interrupt the pipeline. Protected by mu.
@@ -49,6 +55,7 @@ func NewApp(binaries embed.FS) *App {
 		store:      state.New(),
 		targets:    state.NewTargetStore(),
 		creds:      state.NewCredentialStore(),
+		invs:       state.NewInventoryStore(),
 		runCancels: make(map[string]context.CancelFunc),
 	}
 }
@@ -384,6 +391,38 @@ func (a *App) DeleteSavedCredential(id string) error {
 // when the operator picks a row from the Step 1 dropdown.
 func (a *App) TouchSavedCredential(id string) error {
 	return a.creds.Touch(id)
+}
+
+// ── Saved-inventory registry (Step 4 helper) ──────────────────────────
+// Same shape as the saved-target / saved-credential wrappers. Stores
+// cluster + network + nodes + ceph + addons + content — everything
+// the operator iterates on between runs except the environment-
+// specific target and cluster_auth pairs (those keep their own stores
+// so a single inventory can be redeployed against multiple
+// hypervisors / credential sets).
+
+// ListSavedInventories returns saved cluster topologies, most-recently-
+// used first. Empty list on first run.
+func (a *App) ListSavedInventories() ([]state.SavedInventory, error) {
+	return a.invs.List()
+}
+
+// SaveInventory upserts a saved cluster topology. Empty ID = new entry;
+// the store generates a UUID, stamps CreatedAt, strips run-time-
+// allocated MACs, and auto-labels if Label is blank.
+func (a *App) SaveInventory(inv state.SavedInventory) (state.SavedInventory, error) {
+	return a.invs.Save(inv)
+}
+
+// DeleteSavedInventory removes a saved entry by ID.
+func (a *App) DeleteSavedInventory(id string) error {
+	return a.invs.Delete(id)
+}
+
+// TouchSavedInventory bumps last-used-at — called when the operator
+// picks a saved inventory from the Step 4 dropdown.
+func (a *App) TouchSavedInventory(id string) error {
+	return a.invs.Touch(id)
 }
 
 // RedeployDevVM tears down and re-runs the same dev-vm inventory: a quick

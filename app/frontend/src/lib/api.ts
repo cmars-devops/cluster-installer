@@ -85,6 +85,25 @@ export type SavedCredential = {
   last_used_at?: string;
 };
 
+// SavedInventory mirrors internal/state.SavedInventory — a saved
+// cluster topology (cluster + network + nodes + ceph + addons +
+// content) the operator can re-pick from the Step 4 dropdown. Target
+// and cluster_auth are intentionally excluded — they have their own
+// registries so the same topology can be redeployed against any
+// (target, credential) pair.
+export type SavedInventory = {
+  id: string;
+  label: string;
+  cluster: any;
+  network: any;
+  nodes: any[];
+  ceph: any;
+  addons: any;
+  content: any;
+  created_at?: string;
+  last_used_at?: string;
+};
+
 // Result of probing an ESXi host (or vCenter) and listing the resources
 // the operator will pick from. Returned by App.DiscoverESXi(target).
 export type ESXiDiscovery = {
@@ -198,6 +217,20 @@ export const api = {
   },
   touchSavedCredential(id: string): Promise<void> {
     return call<void>('TouchSavedCredential', [id], undefined);
+  },
+
+  // ── Saved-inventory registry (Step 4 dropdown) ───────────────────
+  listSavedInventories(): Promise<SavedInventory[]> {
+    return call<SavedInventory[]>('ListSavedInventories', [], []);
+  },
+  saveInventory(inv: SavedInventory): Promise<SavedInventory> {
+    return call<SavedInventory>('SaveInventory', [inv], { ...inv, id: inv.id || 'mock-' + Date.now() });
+  },
+  deleteSavedInventory(id: string): Promise<void> {
+    return call<void>('DeleteSavedInventory', [id], undefined);
+  },
+  touchSavedInventory(id: string): Promise<void> {
+    return call<void>('TouchSavedInventory', [id], undefined);
   },
 
   // Probe an ESXi/vCenter endpoint with the given target spec, return
