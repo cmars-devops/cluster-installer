@@ -271,7 +271,7 @@ const defaultInventory: Inventory = {
     lb_pool: '10.10.1.41-10.10.1.49',
     ingress_lb_ip: '10.10.1.40',
     gateway: '10.10.1.1',
-    nameservers: ['10.10.1.1', '8.8.8.8'],
+    nameservers: ['10.10.1.3'],
     prefix_len: 24,
     cluster_prefix_len: 24
   },
