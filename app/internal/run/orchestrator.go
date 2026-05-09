@@ -351,7 +351,7 @@ func (o *Orchestrator) renderAutoinstall(rctx context.Context, sctx seed.Context
 	// surfaces the interface as ens192. Static / DHCP both go through
 	// the same path now; n.PrimaryMAC is pre-allocated at run start.
 	if n.PrimaryMAC != "" {
-		userData = rewriteUserDataNetwork(userData, n, sctx)
+		userData = rewriteUserDataNetwork(userData, n, sctx, o.Inventory.Target)
 	}
 	// dev-vm minimal install: the content template's `packages:` list
 	// (chrony / lvm2 / nfs-common / open-iscsi / curl / jq) is for
@@ -757,7 +757,7 @@ func rewriteUserDataUsername(userData []byte, newUser string) []byte {
 // The `set-name: ens192` line normalises the in-OS NIC name regardless
 // of which adapter type vSphere attached, so verify / docs / scripts can
 // keep referring to ens192 consistently.
-func rewriteUserDataNetwork(userData []byte, n inventory.NodeSpec, sctx seed.Context) []byte {
+func rewriteUserDataNetwork(userData []byte, n inventory.NodeSpec, sctx seed.Context, target inventory.TargetSpec) []byte {
 	iface := sctx.Node.NetworkInterface
 	if iface == "" {
 		iface = "ens192"
@@ -768,7 +768,13 @@ func rewriteUserDataNetwork(userData []byte, n inventory.NodeSpec, sctx seed.Con
 	// defaults that apply to NIC[0] when the operator left per-NIC
 	// fields blank). Extra NICs only get static IP/prefix; the operator
 	// configures their routing rules in the guest if needed.
-	effNICs := n.EffectiveNICs("")
+	//
+	// Pass the actual port-group names so the synthesized list matches
+	// what Terraform attaches at the VM level — without target's
+	// clusterNetwork the synthesizer suppresses the cluster_ip NIC,
+	// which would render a netplan that doesn't match the guest's
+	// hardware (a NIC the autoinstall doesn't know about).
+	effNICs := n.EffectiveNICs(target.Network, target.ClusterNetwork)
 
 	var b bytes.Buffer
 	b.WriteString("  network:\n")

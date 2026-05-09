@@ -294,7 +294,7 @@ func (o *Orchestrator) writeESXiTFVars(path string) error {
 		// Build the NIC list. Same pattern: explicit n.NICs wins,
 		// otherwise synthesise a single NIC from target.Network +
 		// per-node primary MAC.
-		effNICs := n.EffectiveNICs(o.Inventory.Target.Network)
+		effNICs := n.EffectiveNICs(o.Inventory.Target.Network, o.Inventory.Target.ClusterNetwork)
 		nics := make([]esxiNICVar, 0, len(effNICs))
 		for _, nic := range effNICs {
 			nics = append(nics, esxiNICVar{

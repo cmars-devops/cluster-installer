@@ -74,6 +74,13 @@ func allocateMAC(targetType, cluster, hostname string, nicIndex int) string {
 //   - NodeSpec.NICs (multi-NIC dev-vm flow) gets a per-entry MAC.
 //     Entry 0 mirrors PrimaryMAC; entry N>0 hashes a "nicN"-suffixed
 //     key so each NIC gets its own deterministic address.
+//   - Cluster mode with cluster_ip set on a node + target.ClusterNetwork
+//     configured: a SECOND NIC entry is materialized (network =
+//     target.ClusterNetwork, ip = cluster_ip, MAC = hash#nic1) so the
+//     same downstream code (tfvars, netplan rewriter) treats it as
+//     just another NIC entry. Without target.ClusterNetwork the
+//     materialization is skipped — cluster_ip is silently ignored
+//     because we have no port-group to attach the NIC to.
 //
 // Idempotent: re-running on a populated inventory makes no changes.
 // Returns true if any field was filled.
@@ -86,6 +93,30 @@ func ensureNodeMACs(inv *inventory.Inventory) bool {
 		// the multi-NIC list at default.
 		if n.PrimaryMAC == "" {
 			n.PrimaryMAC = allocateMAC(inv.Target.Type, inv.Cluster.Name, n.Hostname, 0)
+			changed = true
+		}
+		// Materialize the Ceph cluster NIC once, when the inventory
+		// asks for it (cluster_ip set) AND the operator configured a
+		// port-group (target.cluster_network). Both required — without
+		// a port-group there's nothing to attach the NIC to, so we
+		// silently skip rather than create a half-configured NIC.
+		// Idempotent: only adds when n.NICs is empty (otherwise the
+		// operator already curated the list).
+		if n.ClusterIP != "" && inv.Target.ClusterNetwork != "" && len(n.NICs) == 0 {
+			n.NICs = []inventory.NICSpec{
+				{
+					Network: inv.Target.Network,
+					IPMode:  n.IPMode,
+					IP:      n.IP,
+					Label:   "primary",
+				},
+				{
+					Network: inv.Target.ClusterNetwork,
+					IPMode:  "static",
+					IP:      n.ClusterIP,
+					Label:   "cluster",
+				},
+			}
 			changed = true
 		}
 		// Fill MACs on each NIC entry. NIC[0] inherits PrimaryMAC so

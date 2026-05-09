@@ -138,6 +138,13 @@ type TargetSpec struct {
 	Datastore    string `yaml:"datastore,omitempty" json:"datastore,omitempty"`
 	ISODatastore string `yaml:"iso_datastore,omitempty" json:"iso_datastore,omitempty"`
 	Network      string `yaml:"network,omitempty" json:"network,omitempty"`
+	// ClusterNetwork is the vSwitch port-group the per-node Ceph
+	// cluster_ip NIC attaches to. Only meaningful when at least one
+	// node has cluster_ip set (typically OSD nodes). Empty = no
+	// secondary NIC, even if cluster_ip values exist (in which case
+	// EffectiveNICs ignores cluster_ip — Ceph cluster traffic falls
+	// back to the public network).
+	ClusterNetwork string `yaml:"cluster_network,omitempty" json:"cluster_network,omitempty"`
 
 	TLSInsecure bool   `yaml:"tls_insecure,omitempty" json:"tls_insecure,omitempty"`
 	AdvertiseIP string `yaml:"advertise_ip,omitempty" json:"advertise_ip,omitempty"`
@@ -305,22 +312,44 @@ func (n NodeSpec) EffectiveDisks(extras []int) []DiskSpec {
 // synthesised case (single NIC per node) which keeps every existing
 // inventory backward-compatible.
 //
-// targetNetwork is target.Network (the ESXi port-group from Step 2)
-// — the synthesised NIC inherits this when no per-node override
-// exists. Cluster prefix_len + gateway + nameservers come from the
-// shared NetworkSpec; the caller wires those in separately when
-// rendering netplan, since they live outside NodeSpec.
-func (n NodeSpec) EffectiveNICs(targetNetwork string) []NICSpec {
+// publicNetwork is target.Network (Step 2's primary port-group); the
+// synthesised primary NIC inherits this when no per-node override
+// exists. clusterNetwork is target.ClusterNetwork — when non-empty
+// AND the node carries a ClusterIP value, EffectiveNICs returns a
+// SECOND NIC for the Ceph cluster network. Without clusterNetwork
+// configured, ClusterIP is silently ignored at the VM/Terraform
+// layer (a NIC needs a port group to attach to); the operator must
+// wire the second NIC manually in vSphere or set target.cluster_network.
+//
+// Cluster prefix_len + gateway + nameservers come from the shared
+// NetworkSpec; the caller wires those in separately when rendering
+// netplan, since they live outside NodeSpec.
+func (n NodeSpec) EffectiveNICs(publicNetwork, clusterNetwork string) []NICSpec {
 	if len(n.NICs) > 0 {
 		return n.NICs
 	}
-	return []NICSpec{{
-		Network: targetNetwork,
+	out := []NICSpec{{
+		Network: publicNetwork,
 		IPMode:  n.IPMode,
 		IP:      n.IP,
 		MAC:     n.PrimaryMAC,
 		Label:   "nic0",
 	}}
+	// Ceph cluster network NIC. Synthesised from cluster_ip + the
+	// shared cluster port-group. The MAC is filled by ensureNodeMACs
+	// at run start (deterministic on hostname + nicIndex=1) — left
+	// blank here so callers that pre-allocate can detect-and-fill;
+	// callers that don't pre-allocate (rare) get a Terraform "auto"
+	// MAC, still acceptable for a 2nd NIC the wizard doesn't pin.
+	if n.ClusterIP != "" && clusterNetwork != "" {
+		out = append(out, NICSpec{
+			Network: clusterNetwork,
+			IPMode:  "static",
+			IP:      n.ClusterIP,
+			Label:   "cluster",
+		})
+	}
+	return out
 }
 
 func (n NodeSpec) HasRole(role string) bool {

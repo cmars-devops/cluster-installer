@@ -1500,6 +1500,77 @@ content:
       </Section>
     {/if}
 
+    <!-- ── 노드 공통 네트워크 — 모든 노드에 일관 적용되는 네트워크 설정.
+         per-node 'Cluster IP' 입력 시 어떤 vSwitch 포트 그룹/CIDR에
+         attach되는지 명시적으로 표현. Ceph 토폴로지일 때만 보임. -->
+    {#if showCeph}
+      <Section title="노드 공통 네트워크"
+               subtitle="모든 노드의 NIC가 attach될 vSwitch 포트 그룹과 CIDR. Cluster IP는 여기서 정의된 백엔드 네트워크에 할당됩니다.">
+        <h4 class="net-row-title">공용 네트워크 <span class="row-badge muted">primary NIC</span></h4>
+        <div class="grid-3">
+          <Field label="포트 그룹" hint="VM 관리/일반 트래픽 vSwitch">
+            {#if ($wizardStore.discovered.networks ?? []).length > 0}
+              <select value={$wizardStore.inventory.target.network ?? ''}
+                      onchange={(e) => updateTarget({ network: (e.target as HTMLSelectElement).value })}>
+                <option value="">— 포트 그룹 선택 —</option>
+                {#each $wizardStore.discovered.networks ?? [] as net}
+                  <option value={net.name}>{net.name}{net.vswitch ? ` (${net.vswitch})` : ''}{net.vlan_id ? ` VLAN ${net.vlan_id}` : ''}</option>
+                {/each}
+              </select>
+            {:else}
+              <input value={$wizardStore.inventory.target.network ?? ''}
+                     oninput={(e) => updateTarget({ network: (e.target as HTMLInputElement).value })}
+                     placeholder="VM Network" />
+            {/if}
+          </Field>
+          <Field label="CIDR (참고)" hint={$_('step4.podCIDR') === 'Pod CIDR' ? 'public network' : '공용 네트워크 대역'}>
+            <input value={$wizardStore.inventory.ceph.public_network ?? ''}
+                   oninput={(e) => updateCeph({ public_network: (e.target as HTMLInputElement).value })}
+                   placeholder="10.10.1.0/24" />
+          </Field>
+          <Field label="prefix length" hint="netplan addresses에 사용">
+            <input type="number" min="8" max="30"
+                   value={$wizardStore.inventory.network.prefix_len ?? 24}
+                   oninput={(e) => updateNetwork({ prefix_len: +(e.target as HTMLInputElement).value || 24 })} />
+          </Field>
+        </div>
+
+        <h4 class="net-row-title net-cluster">
+          Ceph 백엔드 네트워크 <span class="row-badge muted">cluster NIC (선택)</span>
+        </h4>
+        <p class="muted net-hint">
+          OSD 노드의 <code>Cluster IP</code>가 여기 attach됩니다. <strong>포트 그룹을 비우면</strong> 노드별 Cluster IP가 입력되어 있어도 두 번째 NIC을 만들지 않고 무시됩니다 — Ceph cluster 트래픽이 공용 네트워크로 흐릅니다.
+        </p>
+        <div class="grid-3">
+          <Field label="포트 그룹">
+            {#if ($wizardStore.discovered.networks ?? []).length > 0}
+              <select value={$wizardStore.inventory.target.cluster_network ?? ''}
+                      onchange={(e) => updateTarget({ cluster_network: (e.target as HTMLSelectElement).value })}>
+                <option value="">— (사용 안 함) —</option>
+                {#each $wizardStore.discovered.networks ?? [] as net}
+                  <option value={net.name}>{net.name}{net.vswitch ? ` (${net.vswitch})` : ''}{net.vlan_id ? ` VLAN ${net.vlan_id}` : ''}</option>
+                {/each}
+              </select>
+            {:else}
+              <input value={$wizardStore.inventory.target.cluster_network ?? ''}
+                     oninput={(e) => updateTarget({ cluster_network: (e.target as HTMLInputElement).value })}
+                     placeholder="(비워두면 사용 안 함)" />
+            {/if}
+          </Field>
+          <Field label="CIDR" hint="public_network와 다른 대역 권장 (격리)">
+            <input value={$wizardStore.inventory.ceph.cluster_network ?? ''}
+                   oninput={(e) => updateCeph({ cluster_network: (e.target as HTMLInputElement).value })}
+                   placeholder="172.16.1.0/24" />
+          </Field>
+          <Field label="prefix length">
+            <input type="number" min="8" max="30"
+                   value={$wizardStore.inventory.network.cluster_prefix_len ?? 24}
+                   oninput={(e) => updateNetwork({ cluster_prefix_len: +(e.target as HTMLInputElement).value || 24 })} />
+          </Field>
+        </div>
+      </Section>
+    {/if}
+
     <Section title={$_('step4.nodes')}
              subtitle={$wizardStore.inventory.nodes.length + ' nodes'}>
       {#if $wizardStore.inventory.target.type === 'esxi'}
@@ -1627,7 +1698,9 @@ content:
             <Field label={$_('step4.node.clusterIP')}
                    hint={isCephCoreOnly(node.roles)
                      ? $_('step4.node.clusterIPDisabledHint')
-                     : $_('step4.node.clusterIPHint')}>
+                     : ($wizardStore.inventory.target.cluster_network
+                         ? `'${$wizardStore.inventory.target.cluster_network}' 포트 그룹의 IP`
+                         : '⚠ 상단 "Ceph 백엔드 네트워크" 포트 그룹이 비어있어 입력해도 무시됨')}>
               <input value={node.cluster_ip ?? ''}
                      disabled={isCephCoreOnly(node.roles)}
                      oninput={(e) => updateNode(i, { cluster_ip: (e.target as HTMLInputElement).value || undefined })} />
@@ -2095,4 +2168,20 @@ content:
   .saved-actions { display: flex; gap: 0.6rem; align-items: center;
                    margin-top: 0.5rem; flex-wrap: wrap; }
   .saved-actions .muted { font-size: 0.78rem; color: #71717a; }
+
+  /* Common-network panel — visually delineate public vs cluster
+     subsections inside one Section so the operator parses them at a
+     glance. */
+  .net-row-title { font-size: 0.85rem; color: #d4d4d8;
+                   text-transform: uppercase; letter-spacing: 0.05em;
+                   margin: 0.5rem 0 0.4rem; display: flex;
+                   align-items: center; gap: 0.5rem; }
+  .net-row-title.net-cluster { margin-top: 1.1rem; padding-top: 0.8rem;
+                                border-top: 1px dashed #2a2a30; }
+  .net-hint { margin: 0.2rem 0 0.5rem; font-size: 0.78rem;
+              color: #a1a1aa; line-height: 1.5; }
+  .net-hint code { background: #16161a; padding: 0.05rem 0.3rem;
+                   border-radius: 3px; color: #93c5fd;
+                   font-family: ui-monospace, monospace; }
+  .net-hint strong { color: #fbbf24; }
 </style>

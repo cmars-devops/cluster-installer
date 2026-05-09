@@ -74,7 +74,8 @@
       tls_insecure: t.tls_insecure ?? true,
       datastore: t.datastore ?? '',
       iso_datastore: t.iso_datastore ?? '',
-      network: t.network ?? ''
+      network: t.network ?? '',
+      cluster_network: t.cluster_network ?? ''
     });
     // Discovery cache is per-endpoint; clear so user re-runs against the
     // newly-selected target rather than seeing stale resources.
@@ -110,7 +111,8 @@
         tls_insecure: target.tls_insecure,
         datastore: target.datastore,
         iso_datastore: target.iso_datastore,
-        network: target.network
+        network: target.network,
+        cluster_network: target.cluster_network
       };
       const saved = await api.saveTarget(payload);
       selectedSavedID = saved.id;

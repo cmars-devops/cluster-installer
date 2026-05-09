@@ -67,6 +67,7 @@ export type SavedTarget = {
   datastore?: string;
   iso_datastore?: string;
   network?: string;
+  cluster_network?: string;
   created_at?: string;
   last_used_at?: string;
 };

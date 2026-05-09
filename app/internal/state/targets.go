@@ -49,9 +49,10 @@ type SavedTarget struct {
 	// commits the saved target after a successful Discover so future
 	// runs don't have to re-pick the same datastore/network. Empty for
 	// libvirt/Proxmox or when the operator chose not to capture them.
-	Datastore    string `json:"datastore,omitempty"`
-	ISODatastore string `json:"iso_datastore,omitempty"`
-	Network      string `json:"network,omitempty"`
+	Datastore      string `json:"datastore,omitempty"`
+	ISODatastore   string `json:"iso_datastore,omitempty"`
+	Network        string `json:"network,omitempty"`
+	ClusterNetwork string `json:"cluster_network,omitempty"` // Ceph cluster-network port group (optional; only relevant when any node uses cluster_ip)
 
 	CreatedAt  time.Time `json:"created_at"`
 	LastUsedAt time.Time `json:"last_used_at"`

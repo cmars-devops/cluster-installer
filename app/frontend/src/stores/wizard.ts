@@ -164,7 +164,11 @@ export interface Inventory {
     password: string;          // ESXi root password (used for vSphere API + SSH)
     datastore: string;         // ESXi datastore for VM disks/seed ISOs
     iso_datastore: string;     // ESXi datastore for ISO uploads (often same)
-    network: string;           // ESXi port group name
+    network: string;           // ESXi port group name (public/management network)
+    /** Optional Ceph cluster-network port group. Required only when any
+     *  node carries cluster_ip — without this, cluster_ip is ignored at
+     *  the VM/Terraform layer (no second NIC). */
+    cluster_network?: string;
     tls_insecure: boolean;
     advertise_ip: string;
   };
@@ -285,6 +289,7 @@ const defaultInventory: Inventory = {
     datastore: '',
     iso_datastore: '',
     network: 'VM Network',
+    cluster_network: '',
     tls_insecure: true,  // ESXi/Proxmox lab installs almost always use self-signed certs; defaulting to true matches reality and avoids "x509: certificate signed by unknown authority" on first connect.
     advertise_ip: ''
   },
