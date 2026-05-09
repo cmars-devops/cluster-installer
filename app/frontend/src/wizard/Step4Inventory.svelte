@@ -85,6 +85,22 @@
     }
     return true;
   }
+  // RFC 1123 hostname check — the schema enforces the same pattern, but
+  // catching it inline lets the operator fix it before clicking Validate
+  // (the most common typo is putting '@vSphere-label' suffix here, which
+  // belongs in display_name instead).
+  function isValidHostname(s: string): boolean {
+    if (!s) return false;
+    if (s.length > 63) return false;
+    return /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/.test(s);
+  }
+  // Mirrors the schema's cluster.name pattern. Letters/digits/hyphens
+  // only, must start with a letter and end with letter-or-digit, 3-32
+  // characters total. Schema accepts both upper and lower case so the
+  // operator can keep their inventory naming convention.
+  function isValidClusterName(s: string): boolean {
+    return /^[A-Za-z][A-Za-z0-9-]{1,30}[A-Za-z0-9]$/.test(s);
+  }
   const invalidNameservers = $derived(
     ($wizardStore.inventory.network.nameservers ?? []).filter((n) => !isValidIPv4(n))
   );
@@ -672,7 +688,7 @@ network:
 target:
   type: ${inv.target.type}
   endpoint: ${inv.target.endpoint}
-nodes:${inv.nodes.length === 0 ? ' []' : '\n' + inv.nodes.map((n) => `  - hostname: ${n.hostname}
+nodes:${inv.nodes.length === 0 ? ' []' : '\n' + inv.nodes.map((n) => `  - hostname: ${n.hostname}${n.display_name ? `\n    display_name: ${JSON.stringify(n.display_name)}` : ''}
     ip: ${n.ip}${n.cluster_ip ? `\n    cluster_ip: ${n.cluster_ip}` : ''}
     roles: [${n.roles.join(', ')}]
     os: ${n.os}
@@ -1074,7 +1090,11 @@ content:
     <Section title={$_('step4.cluster')}>
       <div class="grid-2">
         <Field label={$_('step4.clusterName')} hint={$_('step4.clusterNameHint')} required>
-          <input bind:value={$wizardStore.inventory.cluster.name} />
+          <input bind:value={$wizardStore.inventory.cluster.name}
+                 class:input-error={!!$wizardStore.inventory.cluster.name && !isValidClusterName($wizardStore.inventory.cluster.name)} />
+          {#if !!$wizardStore.inventory.cluster.name && !isValidClusterName($wizardStore.inventory.cluster.name)}
+            <span class="input-warn">⚠ 영문/숫자/하이픈만, 영문으로 시작·끝, 3–32자 (예: <code>triangles-ceph</code> 또는 <code>TRIANGLES-CEPH</code>)</span>
+          {/if}
         </Field>
         <Field label={$_('step4.domain')} hint={$_('step4.domainHint')}>
           <input bind:value={$wizardStore.inventory.cluster.domain} />
@@ -1119,10 +1139,20 @@ content:
           </Field>
         {/if}
         <Field label={$_('step4.gateway')}>
-          <input bind:value={$wizardStore.inventory.network.gateway} />
+          <input value={$wizardStore.inventory.network.gateway}
+                 class:input-error={invalidGateway}
+                 oninput={(e) => updateNetwork({ gateway: (e.target as HTMLInputElement).value })} />
+          {#if invalidGateway}
+            <span class="input-warn">⚠ {$_('step4.devVM.invalidIPv4')}: <code>{$wizardStore.inventory.network.gateway}</code></span>
+          {/if}
         </Field>
         <Field label={$_('step4.nameservers')}>
-          <input value={nameserversText} oninput={(e) => nameserversInput((e.target as HTMLInputElement).value)} />
+          <input value={nameserversText}
+                 class:input-error={invalidNameservers.length > 0}
+                 oninput={(e) => nameserversInput((e.target as HTMLInputElement).value)} />
+          {#if invalidNameservers.length > 0}
+            <span class="input-warn">⚠ {$_('step4.devVM.invalidIPv4')}: <code>{invalidNameservers.join(', ')}</code> — {$_('step4.devVM.nameserverHint')}</span>
+          {/if}
         </Field>
       </div>
     </Section>
@@ -1426,8 +1456,10 @@ content:
 
             {#if nodeExpanded[i]}
               <input class="hostname"
+                     class:input-error={!!node.hostname && !isValidHostname(node.hostname)}
                      value={node.hostname}
-                     placeholder="hostname"
+                     placeholder="hostname (예: ceph-mon-01)"
+                     title="RFC 1123 hostname — 영문/숫자/하이픈만, '@' 등 특수문자 사용 시 vSphere 표시명은 'VM 이름' 필드에 입력하세요"
                      oninput={(e) => updateNode(i, { hostname: (e.target as HTMLInputElement).value })} />
             {:else}
               <span class="hostname-display">{node.hostname || '(unnamed)'}</span>
@@ -1452,6 +1484,11 @@ content:
 
           {#if nodeExpanded[i]}
           <div class="grid-3">
+            <Field label={$_('step4.devVM.displayName')} hint={$_('step4.devVM.displayNameHint')}>
+              <input value={node.display_name ?? ''}
+                     oninput={(e) => updateNode(i, { display_name: (e.target as HTMLInputElement).value })}
+                     placeholder={node.hostname || '(호스트네임과 동일)'} />
+            </Field>
             <Field label="IP" required>
               <input value={node.ip}
                      oninput={(e) => updateNode(i, { ip: (e.target as HTMLInputElement).value })} />
